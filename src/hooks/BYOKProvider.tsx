@@ -26,6 +26,7 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
   const { user } = useAuth();
   const [state, setState] = useState<OpenRouterState>(DEFAULT_STATE);
   const [hasStoredOpenRouterKey, setHasStoredOpenRouterKey] = useState(false);
+  const [hasDevFallbackOpenRouterKey, setHasDevFallbackOpenRouterKey] = useState(false);
   const [keyLast4, setKeyLast4] = useState<string | null>(null);
   const [isLoadingKeyStatus, setIsLoadingKeyStatus] = useState(false);
 
@@ -62,6 +63,7 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
   const refreshStoredKeyStatus = useCallback(async () => {
     if (!user) {
       setHasStoredOpenRouterKey(false);
+      setHasDevFallbackOpenRouterKey(false);
       setKeyLast4(null);
       return;
     }
@@ -80,15 +82,18 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
         hasStoredKey?: boolean;
         keyLast4?: string | null;
         storeKey?: boolean;
+        hasDevFallbackKey?: boolean;
       };
 
       setHasStoredOpenRouterKey(Boolean(payload.hasStoredKey));
+      setHasDevFallbackOpenRouterKey(Boolean(payload.hasDevFallbackKey));
       setKeyLast4(payload.keyLast4 ?? null);
       if (typeof payload.storeKey === 'boolean') {
         setState((prev) => ({ ...prev, storeKey: payload.storeKey }));
       }
     } catch {
       setHasStoredOpenRouterKey(false);
+      setHasDevFallbackOpenRouterKey(false);
       setKeyLast4(null);
     } finally {
       setIsLoadingKeyStatus(false);
@@ -120,8 +125,12 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
     hasStoredKey: boolean;
     keyLast4: string | null;
     storeKey: boolean;
+    hasDevFallbackKey?: boolean;
   }) => {
     setHasStoredOpenRouterKey(status.hasStoredKey);
+    if (typeof status.hasDevFallbackKey === 'boolean') {
+      setHasDevFallbackOpenRouterKey(status.hasDevFallbackKey);
+    }
     setKeyLast4(status.keyLast4);
     setState((prev) => ({ ...prev, storeKey: status.storeKey }));
   };
@@ -179,6 +188,7 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
   const clearAllKeys = () => {
     setState(DEFAULT_STATE);
     setHasStoredOpenRouterKey(false);
+    setHasDevFallbackOpenRouterKey(false);
     setKeyLast4(null);
     sessionStorage.removeItem(STORAGE_KEY);
   };
@@ -196,7 +206,10 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
         avatarOrder: state.avatarOrder,
         storeKey: state.storeKey,
         hasStoredOpenRouterKey,
-        hasConfiguredOpenRouterKey: Boolean(state.openRouterKey || hasStoredOpenRouterKey),
+        hasDevFallbackOpenRouterKey,
+        hasConfiguredOpenRouterKey: Boolean(
+          state.openRouterKey || hasStoredOpenRouterKey || hasDevFallbackOpenRouterKey
+        ),
         keyLast4,
         isLoadingKeyStatus,
         setOpenRouterKey,

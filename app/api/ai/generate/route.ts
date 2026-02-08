@@ -27,7 +27,13 @@ const bodySchema = z.object({
   selectedAvatar: z.string().trim().max(64).optional(),
   modelId: z.string().trim().min(3).max(120),
   messages: z.array(messageSchema).min(1).max(200),
-  openRouterKey: z.string().trim().min(10).max(500).optional(),
+  openRouterKey: z
+    .string()
+    .trim()
+    .min(10)
+    .max(500)
+    .regex(/^\S+$/, "OpenRouter key must not contain whitespace")
+    .optional(),
   idempotencyKey: z.string().trim().min(8).max(180).optional(),
 });
 

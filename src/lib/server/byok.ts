@@ -20,6 +20,7 @@ type ByokStatus = {
   provider: Provider;
   storeKey: boolean;
   updatedAt: string | null;
+  hasDevFallbackKey: boolean;
 };
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -91,12 +92,16 @@ export const getByokStatus = async (
   provider: Provider = "openrouter"
 ): Promise<ByokStatus> => {
   const row = await getUserApiKeyRow(supabase, userId, provider);
+  const devFallbackKey = process.env.OPENROUTER_DEV_TEST_KEY?.trim();
+  const hasDevFallbackKey =
+    process.env.NODE_ENV !== "production" && Boolean(devFallbackKey);
   return {
     provider,
     hasStoredKey: Boolean(row?.store_key && row?.encrypted_key),
     keyLast4: row?.key_last4 ?? null,
     storeKey: Boolean(row?.store_key),
     updatedAt: row?.updated_at ?? null,
+    hasDevFallbackKey,
   };
 };
 
@@ -200,6 +205,10 @@ export const getEffectiveOpenRouterKey = async ({
   const record = await getUserApiKeyRow(supabase, userId, "openrouter");
   if (!record?.store_key || !record.encrypted_key) {
     decryptedKeyCache.delete(cacheKeyFor(userId, "openrouter"));
+    const devFallbackKey = process.env.OPENROUTER_DEV_TEST_KEY?.trim();
+    if (process.env.NODE_ENV !== "production" && devFallbackKey) {
+      return devFallbackKey;
+    }
     return null;
   }
 

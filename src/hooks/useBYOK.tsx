@@ -7,6 +7,7 @@ interface BYOKContextType {
   avatarOrder: string[];
   storeKey: boolean;
   hasStoredOpenRouterKey: boolean;
+  hasDevFallbackOpenRouterKey: boolean;
   hasConfiguredOpenRouterKey: boolean;
   keyLast4: string | null;
   isLoadingKeyStatus: boolean;
@@ -18,6 +19,7 @@ interface BYOKContextType {
     hasStoredKey: boolean;
     keyLast4: string | null;
     storeKey: boolean;
+    hasDevFallbackKey?: boolean;
   }) => void;
   refreshStoredKeyStatus: () => Promise<void>;
   setSelectedModels: (models: string[]) => void;

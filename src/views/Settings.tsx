@@ -35,6 +35,7 @@ export default function Settings() {
     setStoreKeyPreference,
     storeKey,
     hasStoredOpenRouterKey,
+    hasDevFallbackOpenRouterKey,
     hasConfiguredOpenRouterKey,
     keyLast4,
     isLoadingKeyStatus,
@@ -108,6 +109,7 @@ export default function Settings() {
         hasStoredKey?: boolean;
         keyLast4?: string | null;
         storeKey?: boolean;
+        hasDevFallbackKey?: boolean;
       };
 
       if (!response.ok) {
@@ -118,6 +120,7 @@ export default function Settings() {
         hasStoredKey: Boolean(payload.hasStoredKey),
         keyLast4: payload.keyLast4 ?? null,
         storeKey: Boolean(payload.storeKey),
+        hasDevFallbackKey: payload.hasDevFallbackKey,
       });
 
       if (storeKey) {
@@ -219,6 +222,11 @@ export default function Settings() {
               )}
               {maskedSessionKey && (
                 <span className="text-sm text-muted-foreground">{maskedSessionKey}</span>
+              )}
+              {hasDevFallbackOpenRouterKey && (
+                <span className="text-sm text-muted-foreground">
+                  Dev env fallback key is active
+                </span>
               )}
             </div>
 

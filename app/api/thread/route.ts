@@ -17,6 +17,8 @@ const querySchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/)
     .optional(),
   sort: z.enum(["new", "top"]).optional(),
+  limit: z.coerce.number().int().min(20).max(400).optional(),
+  cursor: z.string().max(512).optional(),
 });
 
 const unauthorized = () =>
@@ -47,7 +49,10 @@ export async function GET(request: Request) {
       round: url.searchParams.get("round") ?? undefined,
       agent: url.searchParams.get("agent") ?? undefined,
       sort: url.searchParams.get("sort") ?? undefined,
+      limit: url.searchParams.get("limit") ?? undefined,
+      cursor: url.searchParams.get("cursor") ?? undefined,
     });
+    const pageLimit = parsed.limit ?? 160;
 
     const { data: conversation, error: conversationError } = await supabase
       .from("conversations")
@@ -78,9 +83,17 @@ export async function GET(request: Request) {
       threadQuery = threadQuery.or(`avatar_id.eq.${parsed.agent},role.eq.user`);
     }
 
+    if (parsed.cursor && parsed.sort !== "top") {
+      threadQuery = threadQuery.gt("sort_key", parsed.cursor);
+    }
+
     threadQuery = threadQuery
       .order("sort_key", { ascending: true })
       .order("created_at", { ascending: true });
+
+    if (parsed.sort !== "top") {
+      threadQuery = threadQuery.limit(pageLimit + 1);
+    }
 
     const { data: rows, error: rowsError } = await threadQuery;
     if (rowsError) {
@@ -160,7 +173,18 @@ export async function GET(request: Request) {
       return rankedRoots.flatMap((root) => buckets.get(root.key) ?? []);
     })();
 
-    const nodes = orderedRows.map((row) => ({
+    const paginationEnabled = parsed.sort !== "top";
+    const windowedRows = paginationEnabled
+      ? orderedRows.slice(0, pageLimit + 1)
+      : orderedRows;
+    const hasMore = paginationEnabled && windowedRows.length > pageLimit;
+    const pageRows = hasMore ? windowedRows.slice(0, pageLimit) : windowedRows;
+    const nextCursor =
+      hasMore && pageRows.length > 0
+        ? pageRows[pageRows.length - 1].sort_key
+        : null;
+
+    const nodes = pageRows.map((row) => ({
       id: row.id,
       conversationId: row.conversation_id,
       parentMessageId: row.parent_message_id,
@@ -186,6 +210,11 @@ export async function GET(request: Request) {
       nodes,
       rounds: orderedRounds,
       agents,
+      page: {
+        limit: pageLimit,
+        hasMore,
+        nextCursor,
+      },
     };
 
     return NextResponse.json(payload);

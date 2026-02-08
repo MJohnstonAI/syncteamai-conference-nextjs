@@ -57,6 +57,7 @@ See `.env.example` for the full list.
 
 - Client-exposed (safe to expose): `NEXT_PUBLIC_*`
 - Server-only (do not prefix with `NEXT_PUBLIC_`): e.g. `BYOK_ENCRYPTION_KEY`, `OPENROUTER_BASE_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `TRUST_PROXY_HEADERS`
+- On Vercel, set `TRUST_PROXY_HEADERS=true` so rate limiting can resolve client IPs from forwarded headers.
 
 Do not commit secrets. This repo ignores `.env` and `*.local` by default.
 

@@ -62,21 +62,17 @@ export const useCreateConversation = () => {
       title,
       script,
       promptScriptId,
-      overrideUserId,
     }: {
       title: string;
       script?: string;
       promptScriptId?: string;
-      overrideUserId?: string;
     }) => {
       if (!user) throw new Error("User must be authenticated");
-
-      const userIdToStore = overrideUserId ?? user.id;
 
       const { data, error } = await supabase
         .from("conversations")
         .insert({
-          user_id: userIdToStore,
+          user_id: user.id,
           title,
           script,
           prompt_script_id: promptScriptId ?? null,

@@ -15,9 +15,11 @@ import { ThreadEmptyState } from "@/components/thread/ThreadEmptyState";
 import { AgentMiniCard } from "@/components/thread/AgentMiniCard";
 import { RoundPill } from "@/components/thread/RoundPill";
 import { ActionRail } from "@/components/ActionRail";
+import { ConversationHistory } from "@/components/ConversationHistory";
 import { useAuth } from "@/hooks/useAuth";
 import { useCreateConversation } from "@/hooks/useConversations";
 import {
+  streamAgentGeneration,
   useCreateThreadReply,
   useThread,
   useToggleThreadHighlight,
@@ -26,16 +28,28 @@ import { useMessages } from "@/hooks/useMessages";
 import { useUserRole } from "@/hooks/useUserRole";
 import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
-import { authedFetch } from "@/lib/auth-token";
 import { getAgentMeta } from "@/lib/agents";
 import type { ThreadSort } from "@/lib/thread/types";
-import { supabase } from "@/integrations/supabase/client";
-import { Key, Loader2, Sparkles } from "lucide-react";
+import { Key, Loader2, Sparkles, Square } from "lucide-react";
+
+type TranscriptMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+};
+
+type AgentRunStatus = "queued" | "generating" | "completed" | "failed" | "cancelled";
+
+type AgentRunState = {
+  status: AgentRunStatus;
+  modelId: string | null;
+  preview: string;
+  error: string | null;
+};
 
 const Conference = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const { toast } = useToast();
   const { data: userRole } = useUserRole();
   const {
@@ -61,13 +75,18 @@ const Conference = () => {
   const [rootDraft, setRootDraft] = useState("");
   const [pendingParentId, setPendingParentId] = useState<string | null>(null);
   const [isAiThinking, setIsAiThinking] = useState(false);
+  const [agentRunStates, setAgentRunStates] = useState<Record<string, AgentRunState>>({});
+  const [failedAgentIds, setFailedAgentIds] = useState<string[]>([]);
+  const [activeRoundId, setActiveRoundId] = useState<string | null>(null);
 
   const hasCreatedConversation = useRef(false);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const roundTranscriptRef = useRef<TranscriptMessage[]>([]);
+  const roundMessageIdRef = useRef<string | null>(null);
 
   const title = searchParams.get("title") || "Conference";
   const script = searchParams.get("script") || "";
   const promptScriptId = searchParams.get("prompt_id");
-  const promptOwnerId = searchParams.get("prompt_user_id");
   const linkedMessageId = searchParams.get("msg");
 
   const effectiveRole = userRole ?? "pending";
@@ -81,27 +100,37 @@ const Conference = () => {
   const toggleHighlight = useToggleThreadHighlight();
 
   const {
-    data: threadData,
+    data: threadPagesData,
     isLoading: threadLoading,
     error: threadError,
+    hasNextPage,
+    fetchNextPage,
+    isFetchingNextPage,
   } = useThread({
     conversationId,
     roundId: roundFilter,
     agentId: agentFilter,
     sort: sortMode,
+    limit: 140,
   });
-  const { data: messages = [] } = useMessages(conversationId);
+  const threadPages = useMemo(
+    () => threadPagesData?.pages.filter((page): page is NonNullable<typeof page> => Boolean(page)) ?? [],
+    [threadPagesData?.pages]
+  );
+  const firstThreadPage = threadPages[0] ?? null;
+  const threadNodes = useMemo(() => threadPages.flatMap((page) => page.nodes), [threadPages]);
+  const { data: messages = [] } = useMessages(conversationId, 500);
 
   useEffect(() => {
-    if (!user) {
+    if (!loading && !user) {
       navigate("/auth");
     }
-  }, [navigate, user]);
+  }, [loading, navigate, user]);
 
   useEffect(() => {
     if (hasCreatedConversation.current) return;
 
-    if (user && !conversationId && title && !searchParams.get("conversation_id")) {
+    if (!loading && user && !conversationId && title && !searchParams.get("conversation_id")) {
       hasCreatedConversation.current = true;
 
       createConversation.mutate(
@@ -109,7 +138,6 @@ const Conference = () => {
           title,
           script: script || undefined,
           promptScriptId: promptScriptId || undefined,
-          overrideUserId: promptOwnerId || undefined,
         },
         {
           onSuccess: (data) => {
@@ -131,8 +159,8 @@ const Conference = () => {
   }, [
     conversationId,
     createConversation,
+    loading,
     navigate,
-    promptOwnerId,
     promptScriptId,
     script,
     searchParams,
@@ -155,21 +183,27 @@ const Conference = () => {
     setReplyingToId(null);
     setReplyDrafts({});
     setRootDraft("");
+    setAgentRunStates({});
+    setFailedAgentIds([]);
+    setActiveRoundId(null);
+    roundTranscriptRef.current = [];
+    roundMessageIdRef.current = null;
   }, [conversationId]);
 
   useEffect(() => {
     return () => {
       hasCreatedConversation.current = false;
+      generationAbortRef.current?.abort();
     };
   }, []);
 
   const roundLabelById = useMemo(() => {
     const map: Record<string, string> = {};
-    for (const round of threadData?.rounds ?? []) {
+    for (const round of firstThreadPage?.rounds ?? []) {
       map[round.id] = round.label;
     }
     return map;
-  }, [threadData?.rounds]);
+  }, [firstThreadPage?.rounds]);
 
   const activeAvatarIds = useMemo(() => {
     return avatarOrder.filter((avatarId) => {
@@ -179,19 +213,19 @@ const Conference = () => {
   }, [activeModels, avatarOrder, getModelForAvatar]);
 
   useEffect(() => {
-    if (!threadData?.nodes?.length) {
+    if (!threadNodes.length) {
       setSelectedMessageId(null);
       return;
     }
 
-    if (!selectedMessageId || !threadData.nodes.some((node) => node.id === selectedMessageId)) {
-      setSelectedMessageId(threadData.nodes[0].id);
+    if (!selectedMessageId || !threadNodes.some((node) => node.id === selectedMessageId)) {
+      setSelectedMessageId(threadNodes[0].id);
     }
-  }, [selectedMessageId, threadData?.nodes]);
+  }, [selectedMessageId, threadNodes]);
 
   useEffect(() => {
-    if (!threadData?.nodes?.length || !linkedMessageId) return;
-    const exists = threadData.nodes.some((node) => node.id === linkedMessageId);
+    if (!threadNodes.length || !linkedMessageId) return;
+    const exists = threadNodes.some((node) => node.id === linkedMessageId);
     if (!exists) return;
 
     setSelectedMessageId(linkedMessageId);
@@ -212,17 +246,17 @@ const Conference = () => {
       cancelAnimationFrame(rafId);
       window.clearTimeout(timer);
     };
-  }, [linkedMessageId, threadData?.nodes]);
+  }, [linkedMessageId, threadNodes]);
 
   useEffect(() => {
-    if (!threadData?.nodes?.length) {
+    if (!threadNodes.length) {
       if (collapsedIds.size > 0) {
         setCollapsedIds(new Set());
       }
       return;
     }
 
-    const nodeIdSet = new Set(threadData.nodes.map((node) => node.id));
+    const nodeIdSet = new Set(threadNodes.map((node) => node.id));
     const next = new Set<string>();
     collapsedIds.forEach((id) => {
       if (nodeIdSet.has(id)) next.add(id);
@@ -231,21 +265,21 @@ const Conference = () => {
     if (next.size !== collapsedIds.size) {
       setCollapsedIds(next);
     }
-  }, [collapsedIds, threadData?.nodes]);
+  }, [collapsedIds, threadNodes]);
 
   const selectedMessage = useMemo(() => {
     if (!selectedMessageId) return null;
-    return threadData?.nodes.find((node) => node.id === selectedMessageId) ?? null;
-  }, [selectedMessageId, threadData?.nodes]);
+    return threadNodes.find((node) => node.id === selectedMessageId) ?? null;
+  }, [selectedMessageId, threadNodes]);
 
   const hasChildrenMap = useMemo(() => {
     const map = new Map<string, number>();
-    for (const node of threadData?.nodes ?? []) {
+    for (const node of threadNodes) {
       if (!node.parentMessageId) continue;
       map.set(node.parentMessageId, (map.get(node.parentMessageId) ?? 0) + 1);
     }
     return map;
-  }, [threadData?.nodes]);
+  }, [threadNodes]);
 
   const handleToggleCollapse = useCallback((messageId: string) => {
     setCollapsedIds((prev) => {
@@ -317,98 +351,245 @@ const Conference = () => {
     [conversationId, createReply]
   );
 
-  const fetchTranscript = useCallback(async () => {
-    if (!conversationId) return [] as Array<{ role: "user" | "assistant" | "system"; content: string }>;
+  const buildTranscriptFromMessages = useCallback((): TranscriptMessage[] => {
+    return [...messages]
+      .sort((a, b) => {
+        const leftKey = a.sort_key ?? "";
+        const rightKey = b.sort_key ?? "";
+        if (leftKey && rightKey && leftKey !== rightKey) {
+          return leftKey.localeCompare(rightKey);
+        }
+        return a.created_at.localeCompare(b.created_at);
+      })
+      .map((item) => ({
+        role: item.role as "user" | "assistant" | "system",
+        content: item.content,
+      }));
+  }, [messages]);
 
-    const { data, error } = await supabase
-      .from("messages")
-      .select("role, content")
-      .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true });
+  const setAgentState = useCallback(
+    (avatarId: string, updates: Partial<AgentRunState>) => {
+      setAgentRunStates((previous) => {
+        const existing: AgentRunState = previous[avatarId] ?? {
+          status: "queued",
+          modelId: getModelForAvatar(avatarId) ?? null,
+          preview: "",
+          error: null,
+        };
+        return {
+          ...previous,
+          [avatarId]: {
+            ...existing,
+            ...updates,
+          },
+        };
+      });
+    },
+    [getModelForAvatar]
+  );
 
-    if (error) {
-      throw new Error(error.message);
-    }
+  const cancelAgentGeneration = useCallback(() => {
+    generationAbortRef.current?.abort();
+  }, []);
 
-    return (data ?? []).map((item) => ({
-      role: item.role as "user" | "assistant" | "system",
-      content: item.content,
-    }));
-  }, [conversationId]);
-
-  const generateAssistantReplies = useCallback(
+  const runAgentBatch = useCallback(
     async ({
       userMessageId,
-      transcript,
+      avatarIds,
+      transcriptSeed,
     }: {
       userMessageId: string;
-      transcript: Array<{ role: "user" | "assistant" | "system"; content: string }>;
-    }) => {
-      if (!conversationId) return;
+      avatarIds: string[];
+      transcriptSeed: TranscriptMessage[];
+    }): Promise<{ failed: string[]; cancelled: boolean }> => {
+      if (!conversationId) {
+        return { failed: avatarIds, cancelled: false };
+      }
 
-      const orderedAvatarIds = avatarOrder.filter((id) => {
-        const modelId = getModelForAvatar(id);
-        return Boolean(modelId && activeModels.includes(modelId));
-      });
+      const abortController = new AbortController();
+      generationAbortRef.current = abortController;
+      setIsAiThinking(true);
 
-      for (const avatarId of orderedAvatarIds) {
-        const modelId = getModelForAvatar(avatarId);
-        if (!modelId) continue;
+      const transcript = [...transcriptSeed];
+      const failed: string[] = [];
+      let cancelled = false;
 
-        const idempotencyKey = `${conversationId}:${userMessageId}:${avatarId}:${modelId}`;
-        const response = await authedFetch("/api/ai/generate", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-idempotency-key": idempotencyKey,
-          },
-          body: JSON.stringify({
-            conversationId,
-            roundId: userMessageId,
-            messages: transcript,
-            selectedAvatar: avatarId,
+      try {
+        for (const avatarId of avatarIds) {
+          if (abortController.signal.aborted) {
+            cancelled = true;
+            break;
+          }
+
+          const modelId = getModelForAvatar(avatarId);
+          if (!modelId) {
+            failed.push(avatarId);
+            setAgentState(avatarId, {
+              status: "failed",
+              error: "No model selected for this agent.",
+            });
+            continue;
+          }
+
+          setAgentState(avatarId, {
+            status: "generating",
             modelId,
-            openRouterKey: openRouterKey ?? undefined,
-            idempotencyKey,
-          }),
-        });
+            error: null,
+            preview: "",
+          });
 
-        const payload = (await response.json()) as {
-          error?: string;
-          response?: string;
-          retryAfterSec?: number;
-        };
+          let livePreview = "";
 
-        if (!response.ok) {
-          if (response.status === 429) {
-            const retryAfter = payload.retryAfterSec ?? 10;
-            throw new Error(`Rate limited. Retry in ${retryAfter}s.`);
+          try {
+            const idempotencyKey = `${conversationId}:${userMessageId}:${avatarId}:${modelId}:${Date.now()}`;
+            const result = await streamAgentGeneration({
+              conversationId,
+              roundId: userMessageId,
+              selectedAvatar: avatarId,
+              modelId,
+              messages: transcript,
+              openRouterKey: openRouterKey ?? undefined,
+              idempotencyKey,
+              signal: abortController.signal,
+              onDelta: (chunk) => {
+                livePreview += chunk;
+                setAgentState(avatarId, {
+                  preview: livePreview.slice(-1000),
+                });
+              },
+            });
+
+            const aiContent = (result.content || livePreview).trim();
+            if (!aiContent) {
+              throw new Error("Model returned an empty response.");
+            }
+
+            await createReply.mutateAsync({
+              conversationId,
+              roundId: userMessageId,
+              parentMessageId: userMessageId,
+              content: aiContent,
+              replyMode: "agent",
+              avatarId,
+              idempotencyKey: `${idempotencyKey}:persist`,
+            });
+
+            transcript.push({ role: "assistant", content: aiContent });
+            roundTranscriptRef.current = transcript;
+
+            setAgentState(avatarId, {
+              status: "completed",
+              preview: aiContent.slice(0, 1000),
+              error: null,
+            });
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error ? error.message : "Agent generation failed.";
+            const isCancelledError =
+              abortController.signal.aborted ||
+              errorMessage.toLowerCase().includes("cancelled");
+
+            if (isCancelledError) {
+              cancelled = true;
+              setAgentState(avatarId, {
+                status: "cancelled",
+                error: "Generation cancelled.",
+              });
+              break;
+            }
+
+            failed.push(avatarId);
+            setAgentState(avatarId, {
+              status: "failed",
+              error: errorMessage,
+            });
           }
-          if (response.status === 403) {
-            throw new Error(payload.error || "Access required to generate responses.");
-          }
-          if (response.status === 503) {
-            throw new Error("OpenRouter is busy right now. Please retry in a moment.");
-          }
-          throw new Error(payload.error || `Generation failed with ${response.status}`);
         }
 
-        const aiContent = payload.response || "No response";
+        if (cancelled) {
+          setAgentRunStates((previous) => {
+            const next = { ...previous };
+            for (const avatarId of avatarIds) {
+              const state = next[avatarId];
+              if (!state || state.status === "queued" || state.status === "generating") {
+                next[avatarId] = {
+                  status: "cancelled",
+                  modelId: state?.modelId ?? getModelForAvatar(avatarId) ?? null,
+                  preview: state?.preview ?? "",
+                  error: "Generation cancelled.",
+                };
+              }
+            }
+            return next;
+          });
+        }
 
-        await createReply.mutateAsync({
-          conversationId,
-          roundId: userMessageId,
-          parentMessageId: userMessageId,
-          content: aiContent,
-          replyMode: "agent",
-          avatarId,
-        });
-
-        transcript.push({ role: "assistant", content: aiContent });
+        return { failed, cancelled };
+      } finally {
+        setIsAiThinking(false);
+        generationAbortRef.current = null;
       }
     },
-    [activeModels, avatarOrder, conversationId, createReply, getModelForAvatar, openRouterKey]
+    [
+      conversationId,
+      createReply,
+      getModelForAvatar,
+      openRouterKey,
+      setAgentState,
+    ]
   );
+
+  const retryFailedAgent = useCallback(
+    async (avatarId: string) => {
+      if (isAiThinking) return;
+      if (!conversationId || !roundMessageIdRef.current) {
+        toast({
+          title: "Retry unavailable",
+          description: "No partial round found to recover.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const transcript = [...roundTranscriptRef.current];
+      const result = await runAgentBatch({
+        userMessageId: roundMessageIdRef.current,
+        avatarIds: [avatarId],
+        transcriptSeed: transcript,
+      });
+
+      if (result.cancelled) {
+        toast({
+          title: "Generation cancelled",
+          description: "Agent retry was cancelled.",
+        });
+      }
+
+      setFailedAgentIds((previous) => {
+        const withoutCurrent = previous.filter((id) => id !== avatarId);
+        if (result.failed.includes(avatarId)) {
+          return withoutCurrent.includes(avatarId)
+            ? withoutCurrent
+            : [...withoutCurrent, avatarId];
+        }
+        return withoutCurrent;
+      });
+    },
+    [conversationId, isAiThinking, runAgentBatch, toast]
+  );
+
+  const retryAllFailedAgents = useCallback(async () => {
+    if (isAiThinking || failedAgentIds.length === 0) return;
+    if (!roundMessageIdRef.current) return;
+
+    const transcript = [...roundTranscriptRef.current];
+    const result = await runAgentBatch({
+      userMessageId: roundMessageIdRef.current,
+      avatarIds: failedAgentIds,
+      transcriptSeed: transcript,
+    });
+    setFailedAgentIds(result.failed);
+  }, [failedAgentIds, isAiThinking, runAgentBatch]);
 
   const submitReply = useCallback(
     async ({
@@ -447,12 +628,58 @@ const Conference = () => {
           return;
         }
 
-        setIsAiThinking(true);
-        const transcript = await fetchTranscript();
-        await generateAssistantReplies({
+        if (activeAvatarIds.length === 0) {
+          toast({
+            title: "No active models",
+            description: "Select at least one model to generate agent responses.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const transcript = buildTranscriptFromMessages();
+        const hasUserMessage = messages.some((item) => item.id === userMessage.id);
+        if (!hasUserMessage) {
+          transcript.push({
+            role: "user",
+            content: userMessage.content,
+          });
+        }
+
+        roundTranscriptRef.current = transcript;
+        roundMessageIdRef.current = userMessage.id;
+        setActiveRoundId(userMessage.id);
+        setFailedAgentIds([]);
+
+        const initialStates: Record<string, AgentRunState> = {};
+        for (const avatarId of activeAvatarIds) {
+          initialStates[avatarId] = {
+            status: "queued",
+            modelId: getModelForAvatar(avatarId) ?? null,
+            preview: "",
+            error: null,
+          };
+        }
+        setAgentRunStates(initialStates);
+
+        const result = await runAgentBatch({
           userMessageId: userMessage.id,
-          transcript,
+          avatarIds: activeAvatarIds,
+          transcriptSeed: transcript,
         });
+        setFailedAgentIds(result.failed);
+        if (result.cancelled) {
+          toast({
+            title: "Generation cancelled",
+            description: "The round was cancelled before all agents completed.",
+          });
+        } else if (result.failed.length > 0) {
+          toast({
+            title: "Partial round failure",
+            description: `${result.failed.length} agent response(s) failed. Use retry to recover.`,
+            variant: "destructive",
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to send reply.";
         toast({
@@ -461,28 +688,49 @@ const Conference = () => {
           variant: "destructive",
         });
       } finally {
-        setIsAiThinking(false);
         setPendingParentId(null);
       }
     },
     [
+      activeAvatarIds,
+      buildTranscriptFromMessages,
       conversationId,
       createUserReply,
-      fetchTranscript,
-      generateAssistantReplies,
+      getModelForAvatar,
       hasConfiguredOpenRouterKey,
       hasPrivilegedAccess,
       isAiThinking,
+      messages,
       pendingParentId,
+      runAgentBatch,
       toast,
     ]
   );
+
+  const handleSelectConversation = useCallback(
+    (nextConversationId: string) => {
+      setConversationId(nextConversationId);
+      setSelectedMessageId(null);
+      navigate(`/conference?conversation_id=${nextConversationId}`, {
+        replace: true,
+      });
+    },
+    [navigate]
+  );
+
+  const handleNewConversation = useCallback(() => {
+    setConversationId(null);
+    setSelectedMessageId(null);
+    navigate("/conference");
+  }, [navigate]);
 
   const leftSidebar = (
     <div className="space-y-4">
       <section className="rounded-lg border bg-card p-3">
         <p className="text-xs uppercase tracking-wide text-muted-foreground">Conference</p>
-        <h2 className="mt-1 text-lg font-semibold leading-tight">{threadData?.rootPost.title ?? title}</h2>
+        <h2 className="mt-1 text-lg font-semibold leading-tight">
+          {firstThreadPage?.rootPost.title ?? title}
+        </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Badge variant="outline">{effectiveRole}</Badge>
           {hasConfiguredOpenRouterKey ? (
@@ -496,13 +744,23 @@ const Conference = () => {
           variant="outline"
           size="sm"
           className="mt-3 w-full"
-          onClick={() => {
-            setConversationId(null);
-            navigate("/conference");
-          }}
+          onClick={handleNewConversation}
         >
           New Conference
         </Button>
+      </section>
+
+      <section className="space-y-2 rounded-lg border bg-card p-3">
+        <h3 className="text-sm font-semibold">Session Vault</h3>
+        <ConversationHistory
+          embedded
+          hideNewButton
+          limit={25}
+          currentConversationId={conversationId}
+          onSelectConversation={handleSelectConversation}
+          onNewConversation={handleNewConversation}
+          className="max-h-[280px]"
+        />
       </section>
 
       <section className="space-y-2 rounded-lg border bg-card p-3">
@@ -516,8 +774,8 @@ const Conference = () => {
           onRoundFilterChange={setRoundFilter}
           agentFilter={agentFilter}
           onAgentFilterChange={setAgentFilter}
-          rounds={threadData?.rounds ?? []}
-          agents={threadData?.agents ?? []}
+          rounds={firstThreadPage?.rounds ?? []}
+          agents={firstThreadPage?.agents ?? []}
         />
       </section>
 
@@ -530,13 +788,48 @@ const Conference = () => {
             {activeAvatarIds.map((avatarId, index) => {
               const modelId = getModelForAvatar(avatarId);
               const agent = getAgentMeta(avatarId);
+              const state = agentRunStates[avatarId];
+              const statusLabel = state?.status ? state.status.replace("_", " ") : "idle";
+              const statusClass =
+                state?.status === "completed"
+                  ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                  : state?.status === "failed"
+                  ? "bg-destructive/10 text-destructive border-destructive/20"
+                  : state?.status === "generating"
+                  ? "bg-primary/10 text-primary border-primary/20"
+                  : state?.status === "cancelled"
+                  ? "bg-muted text-muted-foreground border-border"
+                  : "bg-muted text-muted-foreground border-border";
               return (
                 <div key={avatarId} className="rounded-lg border bg-background p-2">
                   <div className="mb-2 flex items-center justify-between">
                     <Badge variant="outline">#{index + 1}</Badge>
-                    <span className="truncate text-xs text-muted-foreground">{modelId ?? "No model"}</span>
+                    <Badge variant="outline" className={statusClass}>
+                      {statusLabel}
+                    </Badge>
                   </div>
                   <AgentMiniCard agentId={agent?.id ?? avatarId} />
+                  <p className="mt-2 truncate text-xs text-muted-foreground">{modelId ?? "No model"}</p>
+                  {state?.preview ? (
+                    <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">{state.preview}</p>
+                  ) : null}
+                  {state?.error ? (
+                    <p className="mt-1 text-xs text-destructive">{state.error}</p>
+                  ) : null}
+                  {state?.status === "failed" && activeRoundId ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-2 h-7 text-xs"
+                      onClick={() => {
+                        void retryFailedAgent(avatarId);
+                      }}
+                      disabled={isAiThinking}
+                    >
+                      Retry Agent
+                    </Button>
+                  ) : null}
                 </div>
               );
             })}
@@ -544,11 +837,32 @@ const Conference = () => {
         )}
       </section>
 
+      {failedAgentIds.length > 0 ? (
+        <section className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+          <h3 className="text-sm font-semibold text-destructive">Recovery</h3>
+          <p className="text-xs text-muted-foreground">
+            {failedAgentIds.length} agent response(s) failed for this round.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => {
+              void retryAllFailedAgents();
+            }}
+            disabled={isAiThinking}
+          >
+            Retry Failed Agents
+          </Button>
+        </section>
+      ) : null}
+
       <section className="space-y-2 rounded-lg border bg-card p-3">
         <h3 className="text-sm font-semibold">Round Timeline</h3>
         <div className="space-y-1">
-          {threadData?.rounds?.length ? (
-            threadData.rounds.map((round) => (
+          {firstThreadPage?.rounds?.length ? (
+            firstThreadPage.rounds.map((round) => (
               <button
                 key={round.id}
                 type="button"
@@ -597,14 +911,25 @@ const Conference = () => {
     <div className="flex h-full flex-col">
       <header className="border-b bg-background/80 px-4 py-3 backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold">{threadData?.rootPost.title ?? title}</h1>
+          <h1 className="text-xl font-semibold">{firstThreadPage?.rootPost.title ?? title}</h1>
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <Sparkles className="h-4 w-4" />
             <span>{activeAvatarIds.length} active agents</span>
             {isAiThinking ? (
-              <span className="inline-flex items-center gap-1 text-primary">
-                <Loader2 className="h-4 w-4 animate-spin" /> Generating
-              </span>
+              <>
+                <span className="inline-flex items-center gap-1 text-primary">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Generating
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={cancelAgentGeneration}
+                >
+                  <Square className="mr-2 h-3.5 w-3.5" />
+                  Cancel
+                </Button>
+              </>
             ) : null}
           </div>
         </div>
@@ -627,13 +952,18 @@ const Conference = () => {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <div className="mx-auto w-full max-w-4xl space-y-4">
-          <RootPostCard post={threadData?.rootPost ?? {
-            id: "root:loading",
-            conversationId: conversationId ?? "",
-            title,
-            topic: script || null,
-            createdAt: new Date().toISOString(),
-          }} commentCount={threadData?.nodes.length ?? 0} />
+          <RootPostCard
+            post={
+              firstThreadPage?.rootPost ?? {
+                id: "root:loading",
+                conversationId: conversationId ?? "",
+                title,
+                topic: script || null,
+                createdAt: new Date().toISOString(),
+              }
+            }
+            commentCount={threadNodes.length}
+          />
 
           {threadLoading ? (
             <ThreadSkeleton />
@@ -641,11 +971,11 @@ const Conference = () => {
             <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
               {(threadError as Error).message || "Unable to load thread."}
             </div>
-          ) : (threadData?.nodes.length ?? 0) === 0 ? (
+          ) : threadNodes.length === 0 ? (
             <ThreadEmptyState hasFilters={roundFilter !== "all" || agentFilter !== "all"} />
           ) : (
             <ThreadList
-              nodes={threadData?.nodes ?? []}
+              nodes={threadNodes}
               collapsedIds={collapsedIds}
               selectedMessageId={selectedMessageId}
               linkTargetId={linkTargetId}
@@ -661,6 +991,7 @@ const Conference = () => {
                     conversationId,
                     messageId,
                     highlighted,
+                    idempotencyKey: `${conversationId}:${messageId}:${highlighted}`,
                   })
                   .catch((error) => {
                     const message =
@@ -702,6 +1033,28 @@ const Conference = () => {
               }}
             />
           )}
+
+          {hasNextPage ? (
+            <div className="flex justify-center pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void fetchNextPage();
+                }}
+                disabled={isFetchingNextPage}
+              >
+                {isFetchingNextPage ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Loading More
+                  </>
+                ) : (
+                  "Load More"
+                )}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -786,6 +1139,7 @@ const Conference = () => {
                       conversationId,
                       messageId: selectedMessage.id,
                       highlighted: !selectedMessage.isHighlight,
+                      idempotencyKey: `${conversationId}:${selectedMessage.id}:${!selectedMessage.isHighlight}`,
                     })
                     .catch((error) => {
                       const message =
@@ -824,7 +1178,7 @@ const Conference = () => {
           <ActionRail
             conversationId={conversationId ?? undefined}
             messages={messages}
-            conversationTitle={threadData?.rootPost.title ?? title}
+            conversationTitle={firstThreadPage?.rootPost.title ?? title}
           />
         }
         leftSidebar={leftSidebar}

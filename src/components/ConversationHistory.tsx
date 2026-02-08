@@ -4,19 +4,28 @@ import { Plus, MessageSquare, Trash2 } from "lucide-react";
 import { useConversations, useDeleteConversation } from "@/hooks/useConversations";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 
 interface ConversationHistoryProps {
   currentConversationId: string | null;
   onSelectConversation: (conversationId: string) => void;
   onNewConversation: () => void;
+  className?: string;
+  embedded?: boolean;
+  hideNewButton?: boolean;
+  limit?: number;
 }
 
 export const ConversationHistory = ({
   currentConversationId,
   onSelectConversation,
   onNewConversation,
+  className,
+  embedded = false,
+  hideNewButton = false,
+  limit = 50,
 }: ConversationHistoryProps) => {
-  const { data: conversations = [], isLoading } = useConversations();
+  const { data: conversations = [], isLoading } = useConversations(limit);
   const deleteConversation = useDeleteConversation();
   const { toast } = useToast();
 
@@ -38,16 +47,24 @@ export const ConversationHistory = ({
   };
 
   return (
-    <aside className="w-full border-r flex flex-col bg-muted/30">
-      <div className="p-4 border-b">
-        <Button onClick={onNewConversation} className="w-full" size="sm">
-          <Plus className="h-4 w-4 mr-2" />
-          New Conference
-        </Button>
-      </div>
+    <aside
+      className={cn(
+        "w-full flex flex-col",
+        embedded ? "rounded-lg border bg-card" : "border-r bg-muted/30",
+        className
+      )}
+    >
+      {!hideNewButton ? (
+        <div className="border-b p-4">
+          <Button onClick={onNewConversation} className="w-full" size="sm">
+            <Plus className="mr-2 h-4 w-4" />
+            New Conference
+          </Button>
+        </div>
+      ) : null}
 
       <ScrollArea className="flex-1">
-        <div className="p-2 space-y-1">
+        <div className="space-y-1 p-2">
           {isLoading ? (
             <>
               {[...Array(5)].map((_, i) => (

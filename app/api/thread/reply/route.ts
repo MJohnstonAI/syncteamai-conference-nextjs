@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { claimIdempotencyKey } from "@/lib/server/rate-limit";
+import {
+  claimIdempotencyKey,
+  enforceRateLimit,
+  resolveRequestIdentity,
+} from "@/lib/server/rate-limit";
 import { requireRequestUser } from "@/lib/server/supabase-server";
 
 export const runtime = "nodejs";
@@ -18,9 +22,52 @@ const bodySchema = z.object({
 const unauthorized = () =>
   NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+const tooManyRequests = (message: string, retryAfterSec: number) =>
+  NextResponse.json(
+    {
+      error: message,
+      code: "RATE_LIMITED",
+      retryAfterSec,
+    },
+    {
+      status: 429,
+      headers: {
+        "Retry-After": String(Math.max(1, retryAfterSec)),
+      },
+    }
+  );
+
 export async function POST(request: Request) {
   try {
     const { user, supabase } = await requireRequestUser(request);
+    const identity = resolveRequestIdentity(request, user.id);
+
+    const userLimit = await enforceRateLimit({
+      scope: "user",
+      identifier: `${identity.userKey}:thread-reply`,
+      limit: 40,
+      windowSec: 60,
+    });
+    if (!userLimit.allowed) {
+      return tooManyRequests(
+        "Reply rate limit reached. Try again shortly.",
+        userLimit.retryAfterSec
+      );
+    }
+
+    const ipLimit = await enforceRateLimit({
+      scope: "ip",
+      identifier: `${identity.ipKey}:thread-reply`,
+      limit: 100,
+      windowSec: 60,
+    });
+    if (!ipLimit.allowed) {
+      return tooManyRequests(
+        "This IP is temporarily rate limited.",
+        ipLimit.retryAfterSec
+      );
+    }
+
     const body = bodySchema.parse(await request.json());
 
     const { data: conversation, error: conversationError } = await supabase

@@ -48,9 +48,6 @@ export const TemplateCard = ({ prompt, userRole, groups }: TemplateCardProps) =>
     if (prompt.id) {
       params.set("prompt_id", prompt.id);
     }
-    if (prompt.user_id) {
-      params.set("prompt_user_id", prompt.user_id);
-    }
     navigate(`/conference?${params.toString()}`);
   };
 

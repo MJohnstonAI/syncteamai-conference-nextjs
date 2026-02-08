@@ -25,8 +25,9 @@ const inMemoryIdempotency = new Map<string, number>();
 const inMemoryConcurrency = new Map<string, { count: number; expiresAt: number }>();
 const inMemoryCircuit = new Map<string, number>();
 
-const isProduction = process.env.NODE_ENV === "production";
-const trustProxyHeaders = process.env.TRUST_PROXY_HEADERS === "true";
+const trustProxyHeaders =
+  process.env.TRUST_PROXY_HEADERS === "true" ||
+  (process.env.TRUST_PROXY_HEADERS == null && process.env.NODE_ENV === "production");
 const upstashTimeoutMs = 2500;
 
 const getNow = () => Date.now();
@@ -141,9 +142,6 @@ export const enforceRateLimit = async ({
   const key = `ratelimit:${scope}:${identifier}`;
   const distributedResult = await consumeUpstashLimit(key, limit, windowSec);
   if (distributedResult) return distributedResult;
-  if (isProduction) {
-    return { allowed: false, count: limit + 1, limit, retryAfterSec: windowSec };
-  }
   return consumeInMemoryLimit(key, limit, windowSec);
 };
 
@@ -167,9 +165,6 @@ export const claimIdempotencyKey = async ({
   ]);
   if (setResult != null) {
     return setResult === "OK";
-  }
-  if (isProduction) {
-    return false;
   }
 
   const now = getNow();
@@ -235,9 +230,6 @@ export const acquireUserConcurrencySlot = async ({
       release: acquired ? releaseDistributed : async () => undefined,
     };
   }
-  if (isProduction) {
-    return { acquired: false, active: maxConcurrent + 1, release: async () => undefined };
-  }
 
   const now = getNow();
   const local = inMemoryConcurrency.get(key);
@@ -278,9 +270,6 @@ export const getCircuitCooldownSec = async (provider: "openrouter"): Promise<num
     if (Number.isFinite(ttl) && ttl > 0) return ttl;
     return 0;
   }
-  if (isProduction) {
-    return 15;
-  }
 
   const expiresAt = inMemoryCircuit.get(key);
   if (!expiresAt) return 0;
@@ -298,7 +287,6 @@ export const openCircuitFor = async ({
   const key = `circuit:${provider}:cooldown`;
   const distributed = await upstashCommand(["SET", key, "1", "EX", ttlSec]);
   if (distributed != null) return;
-  if (isProduction) return;
   inMemoryCircuit.set(key, getNow() + ttlSec * 1000);
 };
 

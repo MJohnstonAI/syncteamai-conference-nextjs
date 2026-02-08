@@ -41,4 +41,9 @@ export type ThreadResponse = {
   nodes: ThreadNode[];
   rounds: ThreadRound[];
   agents: ThreadAgent[];
+  page: {
+    limit: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
 };

@@ -13,13 +13,13 @@ import { Badge } from "@/components/ui/badge";
 import { Send, Loader2, Sparkles, Key, ImagePlus, Paperclip, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useCreateConversation, useConversation } from "@/hooks/useConversations";
-import { useMessages, useSendMessage, type Message } from "@/hooks/useMessages";
+import { useMessages, useSendMessage } from "@/hooks/useMessages";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
-import { HomeIcon } from "@/components/HomeIcon";
 import { TokenLimitWidget } from "@/components/TokenLimitWidget";
 import { useUserRole } from "@/hooks/useUserRole";
 import { useBYOK } from "@/hooks/useBYOK";
+import { authedFetch } from "@/lib/auth-token";
 import { ModelSelectionDropdown } from "@/components/ModelSelectionDropdown";
 import { BYOKModal } from "@/components/BYOKModal";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -78,12 +78,12 @@ const Conference = () => {
   const { data: userRole } = useUserRole();
   const { 
     openRouterKey,
+    hasConfiguredOpenRouterKey,
     selectedModels,
     activeModels,
     avatarOrder,
     getModelForAvatar,
     setSelectedModels,
-    toggleModelActive
   } = useBYOK();
   const [inputValue, setInputValue] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -390,7 +390,11 @@ const Conference = () => {
     }
 
     try {
-      await sendMessage.mutateAsync({ conversationId, role: 'user', content: userContent });
+      const userMessage = await sendMessage.mutateAsync({
+        conversationId,
+        role: 'user',
+        content: userContent,
+      });
       setIsAiThinking(true);
 
       const role = userRole ?? 'pending';
@@ -399,10 +403,13 @@ const Conference = () => {
       const isFree = role === 'free';
       const hasSeat = isAdmin || isPaid || isFree;
 
-      // Enforce BYOK for all users (including admin)
       const modelsToCall = activeModels;
-      if (!openRouterKey || !hasSeat) {
-        toast({ title: 'BYOK Required', description: 'Add your OpenRouter API key in Settings to continue.', variant: 'destructive' });
+      if (!hasConfiguredOpenRouterKey || !hasSeat) {
+        toast({
+          title: 'BYOK Required',
+          description: 'Add your OpenRouter API key in Settings to continue.',
+          variant: 'destructive',
+        });
         setIsAiThinking(false);
         return;
       }
@@ -421,16 +428,43 @@ const Conference = () => {
       for (const avatarId of orderedAvatarIds) {
         const modelId = getModelForAvatar(avatarId);
         if (!modelId) continue;
-        const { data, error } = await supabase.functions.invoke('ai-conference', {
-          body: {
+
+        const idempotencyKey = `${conversationId}:${userMessage.id}:${avatarId}:${modelId}`;
+        const response = await authedFetch('/api/ai/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-idempotency-key': idempotencyKey,
+          },
+          body: JSON.stringify({
+            conversationId,
+            roundId: userMessage.id,
             messages: transcript,
             selectedAvatar: avatarId,
             modelId,
-            openRouterKey,
-          },
+            openRouterKey: openRouterKey ?? undefined,
+            idempotencyKey,
+          }),
         });
-        if (error) throw error;
-        const aiContent = data?.response || 'No response';
+
+        const payload = (await response.json()) as {
+          error?: string;
+          response?: string;
+          retryAfterSec?: number;
+        };
+
+        if (!response.ok) {
+          if (response.status === 429) {
+            const retryAfter = payload.retryAfterSec ?? 10;
+            throw new Error(`Rate limited. Retry in ${retryAfter}s.`);
+          }
+          if (response.status === 503) {
+            throw new Error('OpenRouter is busy right now. Please retry in a moment.');
+          }
+          throw new Error(payload.error || `Generation failed with ${response.status}`);
+        }
+
+        const aiContent = payload.response || 'No response';
         await sendMessage.mutateAsync({ conversationId, role: 'assistant', content: aiContent, avatarId });
         transcript.push({ role: 'assistant', content: aiContent });
       }
@@ -508,7 +542,7 @@ const Conference = () => {
         <ResizablePanel defaultSize={80} minSize={50}>
           <main className="flex flex-col h-full">
         {/* BYOK Upsell for Paid Users */}
-        {hasPrivilegedAccess && !openRouterKey && (
+        {hasPrivilegedAccess && !hasConfiguredOpenRouterKey && (
           <Alert className="mx-6 mt-4">
             <Key className="h-4 w-4" />
             <AlertTitle>Unlock Premium AI</AlertTitle>
@@ -526,7 +560,7 @@ const Conference = () => {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <h1 className="text-2xl font-bold">{title || "AI Conference"}</h1>
-              {openRouterKey && (
+              {hasConfiguredOpenRouterKey && (
                 <Badge variant="secondary" className="flex items-center gap-1">
                   <Key className="h-3 w-3" />
                   BYOK: OpenRouter
@@ -536,7 +570,7 @@ const Conference = () => {
             </div>
             <div className="flex items-center gap-4">
               {/* Multi-Role Mode Toggle for BYOK Paid Users */}
-              {openRouterKey && hasPrivilegedAccess && (
+              {hasConfiguredOpenRouterKey && hasPrivilegedAccess && (
                 <div className="flex items-center gap-2 border rounded-lg px-3 py-2">
                   <span className="text-sm font-medium">Multi-Role</span>
                   <Switch 
@@ -564,7 +598,7 @@ const Conference = () => {
               {hasPrivilegedAccess ? (
                 <Button variant="outline" size="sm" onClick={() => setShowBYOKModal(true)}>
                   <Key className="h-4 w-4 mr-2" />
-                  {openRouterKey ? "Manage BYOK" : "Enable BYOK"}
+                  {hasConfiguredOpenRouterKey ? "Manage BYOK" : "Enable BYOK"}
                 </Button>
               ) : null}
               <TokenLimitWidget
@@ -687,7 +721,7 @@ const Conference = () => {
             <ModelSelectionDropdown
               selectedModels={selectedModels}
               onSelectionChange={setSelectedModels}
-              disabled={!openRouterKey || !hasPrivilegedAccess}
+              disabled={!hasConfiguredOpenRouterKey || !hasPrivilegedAccess}
             />
           </div>
           <div className="flex gap-3 max-w-4xl mx-auto">
@@ -740,7 +774,7 @@ const Conference = () => {
               />
             </div>
             <div className="flex flex-col gap-2">
-              {openRouterKey && (
+              {hasConfiguredOpenRouterKey && (
                 <Button
                   onClick={handleImageUpload}
                   size="icon"
@@ -802,6 +836,7 @@ const Conference = () => {
 };
 
 export default Conference;
+
 
 
 

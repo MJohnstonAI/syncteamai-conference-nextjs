@@ -1,14 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { registerBYOKClear } from './useAuth';
-import { DEFAULT_AVATAR_ORDER, SMART_DEFAULTS } from '@/data/openRouterModels';
-
-interface OpenRouterState {
-  openRouterKey: string | null;
-  selectedModels: string[];
-  activeModels: string[];
-  avatarOrder: string[];
-  storeKey: boolean;
-}
+import { createContext, useContext } from 'react';
 
 interface BYOKContextType {
   openRouterKey: string | null;
@@ -16,9 +6,20 @@ interface BYOKContextType {
   activeModels: string[];
   avatarOrder: string[];
   storeKey: boolean;
+  hasStoredOpenRouterKey: boolean;
+  hasConfiguredOpenRouterKey: boolean;
+  keyLast4: string | null;
+  isLoadingKeyStatus: boolean;
 
   setOpenRouterKey: (key: string, shouldStore?: boolean) => void;
   clearOpenRouterKey: () => void;
+  setStoreKeyPreference: (store: boolean) => void;
+  setStoredKeyStatus: (status: {
+    hasStoredKey: boolean;
+    keyLast4: string | null;
+    storeKey: boolean;
+  }) => void;
+  refreshStoredKeyStatus: () => Promise<void>;
   setSelectedModels: (models: string[]) => void;
   toggleModelActive: (modelId: string) => void;
   reorderAvatars: (newOrder: string[]) => void;
@@ -30,15 +31,6 @@ interface BYOKContextType {
 }
 
 export const BYOKContext = createContext<BYOKContextType | undefined>(undefined);
-
-const STORAGE_KEY = 'byok_openrouter';
-const DEFAULT_STATE: OpenRouterState = {
-  openRouterKey: null,
-  selectedModels: ['openai/gpt-4o', 'anthropic/claude-opus-4'],
-  activeModels: ['openai/gpt-4o', 'anthropic/claude-opus-4'],
-  avatarOrder: DEFAULT_AVATAR_ORDER,
-  storeKey: true,
-};
 
 // BYOKProvider moved to separate file to satisfy react-refresh rule
 

@@ -1,11 +1,13 @@
 # SyncTeamAI Conference (Next.js)
 
-Multi-agent "AI Conference" web app built with Next.js (App Router), React, TypeScript, Tailwind, and shadcn/ui. It uses Supabase for data + auth (magic link) and a Supabase Edge Function for model calls (OpenRouter BYOK).
+Multi-agent "AI Conference" web app built with Next.js (App Router), React, TypeScript, Tailwind, and shadcn/ui. It uses Supabase for data + auth (magic link) and a Next.js server route for OpenRouter generation.
 
 ## Features
 
 - "Conference" UI that runs multiple agents sequentially per round
 - BYOK (bring your own key) support for OpenRouter models
+- Server-side OpenRouter boundary (`app/api/ai/generate/route.ts`)
+- Server-side rate limiting, concurrency caps, and idempotency controls
 - Supabase-backed conversations, prompts, and usage accounting (see `supabase/migrations/`)
 - Auth via Supabase magic links (`supabase.auth.signInWithOtp`)
 
@@ -14,7 +16,7 @@ Multi-agent "AI Conference" web app built with Next.js (App Router), React, Type
 - Next.js 14 (App Router), React 18, TypeScript
 - Tailwind + shadcn/ui + lucide-react
 - Supabase (`@supabase/supabase-js`)
-- Supabase Edge Functions (`supabase/functions/ai-conference`)
+- Next.js Route Handlers (`app/api/**`)
 - OpenRouter (API key via env or BYOK)
 
 ## Getting Started
@@ -54,7 +56,7 @@ npm run start
 See `.env.example` for the full list.
 
 - Client-exposed (safe to expose): `NEXT_PUBLIC_*`
-- Server-only (do not prefix with `NEXT_PUBLIC_`): e.g. `SUPABASE_SERVICE_ROLE_KEY`, `OPENROUTER_API_KEY`
+- Server-only (do not prefix with `NEXT_PUBLIC_`): e.g. `BYOK_ENCRYPTION_KEY`, `OPENROUTER_BASE_URL`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
 
 Do not commit secrets. This repo ignores `.env` and `*.local` by default.
 
@@ -70,4 +72,3 @@ Do not commit secrets. This repo ignores `.env` and `*.local` by default.
 - `npm run lint` - ESLint
 - `npm run typecheck` - TypeScript typecheck
 - `npm test` - Vitest (runs even if no tests)
-

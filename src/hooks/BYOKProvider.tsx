@@ -1,7 +1,9 @@
-import { useEffect, useState, ReactNode } from 'react';
+import { useCallback, useEffect, useState, ReactNode } from 'react';
 import { BYOKContext } from '@/hooks/useBYOK';
 import { registerBYOKClear } from '@/hooks/useAuth';
 import { DEFAULT_AVATAR_ORDER, SMART_DEFAULTS } from '@/data/openRouterModels';
+import { authedFetch } from '@/lib/auth-token';
+import { useAuth } from '@/hooks/useAuth';
 
 interface OpenRouterState {
   openRouterKey: string | null;
@@ -17,18 +19,29 @@ const DEFAULT_STATE: OpenRouterState = {
   selectedModels: ['openai/gpt-4o', 'anthropic/claude-opus-4'],
   activeModels: ['openai/gpt-4o', 'anthropic/claude-opus-4'],
   avatarOrder: DEFAULT_AVATAR_ORDER,
-  storeKey: true,
+  storeKey: false,
 };
 
 export const BYOKProvider = ({ children }: { children: ReactNode }) => {
+  const { user } = useAuth();
   const [state, setState] = useState<OpenRouterState>(DEFAULT_STATE);
+  const [hasStoredOpenRouterKey, setHasStoredOpenRouterKey] = useState(false);
+  const [keyLast4, setKeyLast4] = useState<string | null>(null);
+  const [isLoadingKeyStatus, setIsLoadingKeyStatus] = useState(false);
 
   useEffect(() => {
     const stored = sessionStorage.getItem(STORAGE_KEY);
     if (stored) {
       try {
-        const parsed = JSON.parse(stored) as OpenRouterState;
-        setState(parsed.storeKey ? parsed : { ...parsed, openRouterKey: null });
+        const parsed = JSON.parse(stored) as Partial<OpenRouterState>;
+        setState((prev) => ({
+          ...prev,
+          selectedModels: parsed.selectedModels ?? prev.selectedModels,
+          activeModels: parsed.activeModels ?? prev.activeModels,
+          avatarOrder: parsed.avatarOrder ?? prev.avatarOrder,
+          storeKey: parsed.storeKey ?? prev.storeKey,
+          openRouterKey: null,
+        }));
       } catch (e) {
         console.error('[BYOKProvider] Failed to parse stored state:', e);
         sessionStorage.removeItem(STORAGE_KEY);
@@ -37,18 +50,80 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   useEffect(() => {
-    const persistableState = state.storeKey
-      ? state
-      : { ...state, openRouterKey: null };
+    const persistableState = {
+      selectedModels: state.selectedModels,
+      activeModels: state.activeModels,
+      avatarOrder: state.avatarOrder,
+      storeKey: state.storeKey,
+    };
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(persistableState));
-  }, [state]);
+  }, [state.selectedModels, state.activeModels, state.avatarOrder, state.storeKey]);
 
-  const setOpenRouterKey = (key: string, shouldStore = true) => {
-    setState((prev) => ({ ...prev, openRouterKey: key, storeKey: shouldStore }));
+  const refreshStoredKeyStatus = useCallback(async () => {
+    if (!user) {
+      setHasStoredOpenRouterKey(false);
+      setKeyLast4(null);
+      return;
+    }
+
+    setIsLoadingKeyStatus(true);
+    try {
+      const response = await authedFetch('/api/settings/byok', {
+        method: 'GET',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load key status');
+      }
+
+      const payload = (await response.json()) as {
+        hasStoredKey?: boolean;
+        keyLast4?: string | null;
+        storeKey?: boolean;
+      };
+
+      setHasStoredOpenRouterKey(Boolean(payload.hasStoredKey));
+      setKeyLast4(payload.keyLast4 ?? null);
+      if (typeof payload.storeKey === 'boolean') {
+        setState((prev) => ({ ...prev, storeKey: payload.storeKey }));
+      }
+    } catch {
+      setHasStoredOpenRouterKey(false);
+      setKeyLast4(null);
+    } finally {
+      setIsLoadingKeyStatus(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    void refreshStoredKeyStatus();
+  }, [refreshStoredKeyStatus]);
+
+  const setOpenRouterKey = (key: string, shouldStore = false) => {
+    const sanitized = key.trim();
+    setState((prev) => ({
+      ...prev,
+      openRouterKey: sanitized.length > 0 ? sanitized : null,
+      storeKey: shouldStore,
+    }));
   };
 
   const clearOpenRouterKey = () => {
     setState((prev) => ({ ...prev, openRouterKey: null }));
+  };
+
+  const setStoreKeyPreference = (store: boolean) => {
+    setState((prev) => ({ ...prev, storeKey: store }));
+  };
+
+  const setStoredKeyStatus = (status: {
+    hasStoredKey: boolean;
+    keyLast4: string | null;
+    storeKey: boolean;
+  }) => {
+    setHasStoredOpenRouterKey(status.hasStoredKey);
+    setKeyLast4(status.keyLast4);
+    setState((prev) => ({ ...prev, storeKey: status.storeKey }));
   };
 
   const setSelectedModels = (models: string[]) => {
@@ -103,6 +178,8 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
 
   const clearAllKeys = () => {
     setState(DEFAULT_STATE);
+    setHasStoredOpenRouterKey(false);
+    setKeyLast4(null);
     sessionStorage.removeItem(STORAGE_KEY);
   };
 
@@ -118,8 +195,15 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
         activeModels: state.activeModels,
         avatarOrder: state.avatarOrder,
         storeKey: state.storeKey,
+        hasStoredOpenRouterKey,
+        hasConfiguredOpenRouterKey: Boolean(state.openRouterKey || hasStoredOpenRouterKey),
+        keyLast4,
+        isLoadingKeyStatus,
         setOpenRouterKey,
         clearOpenRouterKey,
+        setStoreKeyPreference,
+        setStoredKeyStatus,
+        refreshStoredKeyStatus,
         setSelectedModels,
         toggleModelActive,
         reorderAvatars,

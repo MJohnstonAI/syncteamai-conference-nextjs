@@ -1,0 +1,119 @@
+/* Import design tokens from previous project */
+@import "./styles/tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Override primary color to use brand blue for non-conference pages */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 5% 6%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 240 5% 6%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 5% 6%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 4% 96%;
+    --secondary-foreground: 240 5% 6%;
+
+    --muted: 216 33% 97%;
+    --muted-foreground: 240 4% 46%;
+
+    --accent: 188 94% 42%;
+    --accent-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.75rem;
+    
+    --primary-glow: 217 91% 70%;
+    --shadow-elegant: 0 10px 30px -10px hsl(217 91% 60% / 0.2);
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217 91% 60%;
+  }
+
+  .dark {
+    --background: 240 6% 6%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 5% 8%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 5% 8%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 4% 16%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 5% 65%;
+
+    --accent: 188 94% 42%;
+    --accent-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 4% 16%;
+    --input: 240 4% 16%;
+    --ring: 217 91% 60%;
+    
+    --primary-glow: 217 91% 70%;
+    --shadow-elegant: 0 10px 30px -10px hsl(217 91% 60% / 0.3);
+  }
+}
+
+/* Conference page preserves original purple theme */
+[data-conference-page] {
+  --primary: 239 84% 67%;
+  --ring: 239 84% 67%;
+  --primary-glow: 239 84% 77%;
+  --shadow-elegant: 0 10px 30px -10px hsl(239 84% 67% / 0.2);
+  --sidebar-ring: 217.2 91.2% 59.8%;
+}
+
+[data-conference-page].dark {
+  --primary: 239 84% 67%;
+  --ring: 239 84% 67%;
+  --primary-glow: 239 84% 77%;
+  --shadow-elegant: 0 10px 30px -10px hsl(239 84% 67% / 0.3);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}

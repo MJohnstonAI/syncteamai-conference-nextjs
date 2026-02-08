@@ -1,0 +1,119 @@
+/* ===============================
+   File: src/styles/tokens.css
+   Purpose: Design tokens (light/dark)
+   =============================== */
+:root {
+  /* Layout */
+  --container: 1200px;
+
+  /* Fonts */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Noto Sans, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  --font-head: var(--font-sans);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  /* Type scale */
+  --text-xs: 12px; --text-sm: 14px; --text-base: 16px; --text-lg: 18px; --text-xl: 20px;
+  --text-2xl: 24px; --text-3xl: 32px; --text-4xl: 40px; --text-5xl: 48px;
+
+  /* Spacing (4px scale) */
+  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
+  --space-5: 1.25rem; --space-6: 1.5rem; --space-8: 2rem; --space-10: 2.5rem; --space-12: 3rem;
+
+  /* Radii */
+  --radius-sm: .25rem; --radius-md: .5rem; --radius-lg: .75rem; --radius-xl: 1rem; --radius-full: 999px;
+
+  /* Shadows */
+  --shadow-xs: 0 1px 1px rgb(0 0 0 / .04);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / .06), 0 1px 1px rgb(0 0 0 / .03);
+  --shadow-md: 0 4px 10px rgb(0 0 0 / .08);
+  --shadow-lg: 0 10px 24px rgb(0 0 0 / .12);
+
+  /* Brand (blue-ish) */
+  --brand-50: 239 246 255; --brand-100: 219 234 254; --brand-200: 191 219 254; --brand-300: 147 197 253;
+  --brand-400: 96 165 250; --brand-500: 59 130 246; --brand-600: 37 99 235; --brand-700: 29 78 216; --brand-800: 30 64 175; --brand-900: 30 58 138;
+
+  /* Semantic */
+  --success-500: 34 197 94;  --success-700: 21 128 61;
+  --warn-500: 251 191 36;    --warn-700: 180 83 9;
+  --error-500: 239 68 68;    --error-700: 185 28 28;
+
+  /* Default (will be overridden by light/dark below) */
+  --bg: #ffffff;
+  --fg: #101828;
+  --fg-strong: #0b1220;
+  --fg-muted: #667085;
+
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --border: #e5e7eb;
+
+  /* RGB helpers (derived) */
+  --fg-rgb: 16, 24, 40;
+  --muted-rgb: 100, 116, 139;
+
+  /* Transitions */
+  --ease-quick: 160ms cubic-bezier(.2, .8, .2, 1);
+}
+
+/* Prefer light by default */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --fg: #101828;
+    --fg-strong: #0b1220;
+    --fg-muted: #667085;
+
+    --surface: #ffffff;
+    --surface-2: #f8fafc;
+    --border: #e5e7eb;
+
+    --fg-rgb: 16, 24, 40;
+    --muted-rgb: 100, 116, 139;
+  }
+}
+
+/* Dark theme */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1220;
+    --fg: #e2e8f0;
+    --fg-strong: #f8fafc;
+    --fg-muted: #94a3b8;
+
+    --surface: #0f172a;
+    --surface-2: #111827;
+    --border: #1f2937;
+
+    --fg-rgb: 226, 232, 240;
+    --muted-rgb: 148, 163, 184;
+  }
+}
+
+/* Optional manual theme override via data attribute */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --fg: #101828;
+  --fg-strong: #0b1220;
+  --fg-muted: #667085;
+
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --border: #e5e7eb;
+
+  --fg-rgb: 16, 24, 40;
+  --muted-rgb: 100, 116, 139;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b1220;
+  --fg: #e2e8f0;
+  --fg-strong: #f8fafc;
+  --fg-muted: #94a3b8;
+
+  --surface: #0f172a;
+  --surface-2: #111827;
+  --border: #1f2937;
+
+  --fg-rgb: 226, 232, 240;
+  --muted-rgb: 148, 163, 184;
+}

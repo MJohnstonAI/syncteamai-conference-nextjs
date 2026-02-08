@@ -1,0 +1,505 @@
+# AUTONOMOUS (Vite + React + react-router + Supabase Edge Functions + RLS → NEXT.JS CONVERSION (Codex-ChatGPT)
+
+## CRITICAL INSTRUCTION: AUTONOMOUS OPERATION MODE
+
+You are authorized to make ALL code changes, file operations, and technical decisions WITHOUT asking for approval. Work through all phases independently and only stop if you encounter a critical blocker that makes it impossible to proceed.
+
+**DO NOT ask for approval on:**
+- Creating/modifying files
+- Installing packages
+- Fixing TypeScript errors
+- Adjusting import paths
+- Adding "use client" directives
+- Moving assets
+- Copying components
+- Setting up configurations
+- Any routine conversion tasks
+
+**ONLY STOP AND ASK IF:**
+1. A critical file is completely missing and you cannot infer its structure
+2. You find irreconcilable conflicts in the codebase
+3. The build fails after 3 automatic fix attempts
+4. You need the user to test the final result
+
+---
+
+## YOUR MISSION
+
+Convert the React SPA in `@workspace SYNCTEAMAI-CONFERENCE-LEGACY/` to a Next.js app in `@workspace SYNCTEAMAI-CONFERENCE-NEXTJS/`.
+
+The converted app must be PIXEL-PERFECT - same look, same behavior, same features.
+
+After achieving parity, strategically enhance with Shadcn/ui components where appropriate.
+
+---
+
+## WORKSPACE CONTEXT
+
+- Legacy SPA: `SYNCTEAMAI-CONFERENCE-LEGACY/`
+- Target Next.js: `SYNCTEAMAI-CONFERENCE-NEXTJS/`
+- User is non-technical - they will only verify the visual result
+- Target deployment: Vercel
+- Target audience: Desktop users (1280px-1920px primary)
+- Mobile optimization: NOT required (separate mobile app planned)
+
+---
+
+## AUTONOMOUS EXECUTION PRINCIPLES
+
+### Work Philosophy:
+1. **Bias toward action** - Make decisions and implement them
+2. **Fix forward** - If something breaks, fix it automatically
+3. **Complete phases fully** - Don't leave partial work
+4. **Show, don't ask** - Present completed work, not proposals
+5. **Bundle related changes** - Apply multiple fixes in one go
+
+### Progress Reporting:
+Show brief status updates as you complete each phase:
+```
+✓ Phase 1 Complete - Foundation Setup
+  - Global styles ported
+  - Fonts configured  
+  - Assets moved to /public
+  Proceeding to Phase 2...
+```
+
+Keep updates concise. The user trusts you to make correct decisions.
+
+---
+
+## CONVERSION CONSTRAINTS (NON-NEGOTIABLE)
+
+### Visual Parity Rules:
+1. **Colors**: Use EXACT hex values from legacy CSS/Tailwind config
+   - Never approximate with Tailwind defaults
+   - #2A2A2A stays #2A2A2A
+
+2. **Typography**: Match fonts EXACTLY
+   - Same families, weights, sizes
+   - Same line-heights and letter-spacing
+
+3. **Layout**: Preserve all spacing
+   - Same container widths
+   - Same padding/margins
+   - Same breakpoints
+
+4. **Components**: Keep all UI elements
+   - Every button, link, form must exist
+   - Same hover states and transitions
+   - Same icons and positions
+
+5. **Animations**: Match timing exactly
+   - Same durations and easing
+   - Same scroll effects
+   - Same state transitions
+
+### Desktop-First Strategy:
+- Optimize for 1280px-1920px viewports
+- Ensure nothing breaks below 1024px
+- Don't perfect mobile views (360-768px) - user will create separate mobile app
+
+---
+
+## EXECUTION PHASES
+
+### PHASE 0: Workspace Scan (2 minutes - Auto-execute)
+
+Use @workspace to scan SYNCTEAMAI-CONFERENCE-LEGACY/:
+
+Read these files automatically:
+- package.json
+- index.html
+- tailwind.config.*
+- App.tsx or main entry point
+- globals.css or main stylesheet
+- vite.config.* or build config
+
+Produce a brief inventory:
+```yaml
+React Version: [version]
+Router: [type and version]
+Tailwind: [v3 or v4]
+Routes: [list main routes]
+Key Components: [list 5-8 main components]
+Custom Colors: [list hex values]
+Custom Fonts: [list font families]
+Assets: [count images/fonts]
+Desktop Optimizations: [note any fixed widths, large fonts]
+Shadcn Opportunities: [list 3-5 components that would benefit]
+```
+
+Then immediately proceed to Phase 1 without waiting for approval.
+
+---
+
+### PHASE 1: Foundation Setup (10 minutes - Auto-execute)
+
+**1.1 Initialize Next.js with Shadcn/ui**
+```bash
+# Run these automatically
+cd SYNCTEAMAI-CONFERENCE-NEXTJS
+npx shadcn@latest init
+# Use these settings without asking:
+# - TypeScript: Yes
+# - Style: Default
+# - Base color: Neutral (will customize)
+# - CSS variables: Yes
+```
+
+**1.2 Port Global Styles**
+
+Copy tailwind.config.* from legacy, then:
+- Port all CSS to app/globals.css
+- Preserve CSS variables, keyframes, custom classes
+- Map legacy colors to Shadcn CSS variables:
+```css
+@layer base {
+  :root {
+    --background: [legacy background hex];
+    --foreground: [legacy text hex];
+    --primary: [legacy primary hex];
+    /* Map all colors automatically */
+  }
+}
+```
+
+**1.3 Configure Fonts**
+- Convert to next/font/google or next/font/local
+- Wire to CSS variables
+- Apply to body and headings exactly as legacy
+
+**1.4 Move Assets**
+- Copy images to public/images/
+- Copy fonts to public/fonts/
+- Update all references
+
+**1.5 Vercel Configuration**
+Create vercel.json and next.config.js with optimal settings.
+
+Run `npm run dev` to verify foundation works.
+
+**Report when done:**
+```
+✓ Phase 1 Complete
+  Proceeding to Phase 2...
+```
+
+---
+
+### PHASE 2: Component Migration (30 minutes - Auto-execute)
+
+**Rules:**
+- Copy components VERBATIM first
+- Make only minimal Next.js compatibility changes:
+  - Fix import paths
+  - Add "use client" where needed (useState, useEffect, window, document)
+  - Replace asset imports with /public paths
+- DO NOT rewrite markup or Tailwind classes
+- DO NOT refactor or "improve" logic
+- Preserve all props and state
+
+**Migration Order:**
+1. Shared types and constants
+2. Layout components (Header, Footer, Nav)
+3. Page components
+4. Feature components
+
+**Fix TypeScript errors automatically as you go.**
+
+**After every 5 components, run:**
+```bash
+npx tsc --noEmit
+```
+If errors appear, fix them immediately without asking.
+
+**Report when done:**
+```
+✓ Phase 2 Complete - [X] components migrated
+  Proceeding to Phase 3...
+```
+
+---
+
+### PHASE 3: Routing (15 minutes - Auto-execute)
+
+Convert SPA routes to Next.js pages:
+- / → app/page.tsx
+- /route → app/route/page.tsx
+
+**Preserve navigation behavior:**
+- Keep hash navigation if used (/#section)
+- Maintain scroll offsets
+- Preserve desktop menu structure
+
+**Add Metadata API:**
+```typescript
+// app/layout.tsx
+export const metadata: Metadata = {
+  title: '[from legacy index.html]',
+  description: '[from legacy meta]',
+  openGraph: { /* ... */ },
+  twitter: { /* ... */ },
+}
+```
+
+Run `npm run build` to verify routes work.
+
+**Report when done:**
+```
+✓ Phase 3 Complete - [X] routes created
+  Proceeding to Phase 4...
+```
+
+---
+
+### PHASE 4: Vercel Optimization (10 minutes - Auto-execute)
+
+**4.1 Update next.config.js:**
+```javascript
+const nextConfig = {
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    deviceSizes: [1024, 1280, 1440, 1920, 2560],
+  },
+}
+```
+
+**4.2 Create SEO files:**
+
+app/sitemap.ts:
+```typescript
+export default function sitemap(): MetadataRoute.Sitemap {
+  return [
+    {
+      url: 'https://[domain].vercel.app',
+      lastModified: new Date(),
+      priority: 1,
+    },
+    // Add all routes automatically
+  ]
+}
+```
+
+app/robots.ts:
+```typescript
+export default function robots(): MetadataRoute.Robots {
+  return {
+    rules: { userAgent: '*', allow: '/' },
+    sitemap: 'https://[domain].vercel.app/sitemap.xml',
+  }
+}
+```
+
+**4.3 Performance optimizations:**
+- Replace critical images with next/image (only if layout doesn't break)
+- Add `priority` to hero images
+- Ensure fonts use next/font
+
+Run `npm run build` and check bundle size.
+
+**Report when done:**
+```
+✓ Phase 4 Complete - Vercel optimizations applied
+  Proceeding to Phase 5...
+```
+
+---
+
+### PHASE 5: Parity Validation (10 minutes - Auto-execute)
+
+Run these checks automatically:
+```bash
+npm run build
+npx tsc --noEmit
+```
+
+**Self-verify checklist:**
+- [ ] Build succeeds with no errors
+- [ ] All routes accessible
+- [ ] TypeScript has no errors
+- [ ] All components render
+- [ ] Assets load correctly
+
+**If any check fails, fix it automatically and re-run.**
+
+**Report when done:**
+```yaml
+✓ Phase 5 Complete - Parity Validation
+
+Build: SUCCESS
+TypeScript: PASS
+Routes: [X] routes verified
+Components: [X] components verified
+Parity Status: Ready for user testing
+
+Proceeding to Phase 6...
+```
+
+---
+
+### PHASE 6: Shadcn/ui Enhancements (20 minutes - STOP HERE)
+
+**⚠️ THIS IS THE ONLY PHASE WHERE YOU STOP AND ASK**
+
+Present your analysis:
+```yaml
+Shadcn Enhancement Opportunities:
+
+High Impact (Recommended):
+  1. [Component Name]: [Current implementation] → [Shadcn component]
+     Benefit: [Accessibility, UX improvement, etc.]
+     Visual Impact: [None / Minimal / Requires styling]
+  
+  2. [Component Name]: [Current] → [Shadcn]
+     Benefit: [...]
+     Visual Impact: [...]
+
+Medium Impact (Optional):
+  3. [Component Name]: [Current] → [Shadcn]
+     Benefit: [...]
+
+My Recommendation: Apply High Impact enhancements (#1, #2)
+
+Ready to proceed? Reply with:
+- "Yes" - Apply all recommended
+- "Yes but only #1" - Selective
+- "No" - Skip enhancements
+```
+
+**When user approves, execute enhancements autonomously:**
+
+For each component:
+1. Install Shadcn component: `npx shadcn@latest add [component]`
+2. Replace legacy component
+3. Match visual styling exactly
+4. Test that functionality preserved
+5. Fix any issues immediately
+
+**Report when done:**
+```
+✓ Phase 6 Complete - [X] Shadcn components applied
+  All enhancements maintain visual parity
+  Proceeding to final report...
+```
+
+---
+
+### PHASE 7: Completion Report (2 minutes - Auto-execute)
+
+Present final status:
+```yaml
+🎉 CONVERSION COMPLETE
+
+Status: Ready for User Testing
+Build: Passing
+Bundle Size: [XX] KB initial JS
+Lighthouse: [XX]/100 (desktop)
+
+Migration Summary:
+  Routes: [X] migrated
+  Components: [X] migrated
+  Shadcn Components: [X] applied
+  
+Enhancements Applied:
+  - [List Shadcn components and benefits]
+  
+Visual Parity: Maintained
+  - All colors match exactly
+  - All fonts match exactly
+  - All layouts preserved
+  - All animations preserved
+
+Known Issues: [None or list any]
+
+Next Steps:
+  1. cd SYNCTEAMAI-CONFERENCE-NEXTJS
+  2. npm run dev
+  3. Open http://localhost:3000
+  4. Test at 1440px, 1920px, 1280px
+  5. Verify all functionality works
+
+Deployment:
+  Ready to deploy to Vercel
+  - Push to GitHub
+  - Connect to Vercel
+  - Deploy
+```
+
+---
+
+## ERROR HANDLING (AUTO-FIX)
+
+### Build Errors - Fix Automatically:
+```
+Error detected → Analyze cause → Apply fix → Rebuild → Verify
+Only report if 3 fix attempts fail
+```
+
+### TypeScript Errors - Fix Automatically:
+```
+Run tsc → Find errors → Fix types/imports → Re-run → Verify
+```
+
+### Missing Dependencies - Install Automatically:
+```
+Identify missing package → npm install → Continue
+```
+
+### Visual Mismatches - Fix Automatically:
+```
+Compare implementation → Identify difference → Adjust styling → Verify
+```
+
+**Philosophy: Fix forward, don't ask backward**
+
+---
+
+## COMMUNICATION STYLE
+
+### ✅ Good Updates (Brief, Informative):
+```
+✓ Phase 2 Complete - 18 components migrated, 0 errors
+  Proceeding to Phase 3...
+```
+
+### ❌ Bad Updates (Asking unnecessary questions):
+```
+I'm about to migrate the Header component. Should I:
+1. Add "use client"?
+2. Update the imports?
+3. Fix the TypeScript errors?
+
+Please advise.
+```
+
+**Rule: If you know how to fix it, just fix it.**
+
+---
+
+## FINAL REMINDERS FOR CODEX-CHATGPT
+
+**You have full authority to:**
+- ✅ Create/modify any files
+- ✅ Install any packages
+- ✅ Fix any errors
+- ✅ Make technical decisions
+- ✅ Apply best practices
+- ✅ Run build commands
+- ✅ Execute all phases 0-5 without approval
+
+**You must stop and ask only for:**
+- ⛔ Phase 6 Shadcn enhancement approval
+- ⛔ Critical blockers after 3 fix attempts
+- ⛔ Final user testing readiness
+
+**Your success criteria:**
+1. Next.js app looks identical to Vite + React + react-router 
+2. All functionality works
+3. Build succeeds
+4. User can test and deploy
+
+**Start by using @workspace to scan SYNCTEAMAI-CONFERENCE/ and begin Phase 0 immediately.**
+
+**DO NOT wait for approval to proceed through Phases 0-5.**
+
+**GO.**

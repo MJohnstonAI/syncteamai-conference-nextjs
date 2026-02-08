@@ -327,7 +327,7 @@ export const ActionRail = ({ conversationId, messages = [], conversationTitle }:
 
   return (
     <>
-      <div className="w-16 bg-black flex flex-col items-center py-4 gap-3">
+      <div className="h-full w-16 bg-black flex flex-col items-center py-4 gap-3">
         <TooltipProvider>
           {actions.map((action, index) => (
             <Tooltip key={index}>

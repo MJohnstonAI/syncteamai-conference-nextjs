@@ -14,6 +14,7 @@ import { ThreadSkeleton } from "@/components/thread/ThreadSkeleton";
 import { ThreadEmptyState } from "@/components/thread/ThreadEmptyState";
 import { AgentMiniCard } from "@/components/thread/AgentMiniCard";
 import { RoundPill } from "@/components/thread/RoundPill";
+import { ActionRail } from "@/components/ActionRail";
 import { useAuth } from "@/hooks/useAuth";
 import { useCreateConversation } from "@/hooks/useConversations";
 import {
@@ -21,6 +22,7 @@ import {
   useThread,
   useToggleThreadHighlight,
 } from "@/hooks/useThread";
+import { useMessages } from "@/hooks/useMessages";
 import { useUserRole } from "@/hooks/useUserRole";
 import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
@@ -88,6 +90,7 @@ const Conference = () => {
     agentId: agentFilter,
     sort: sortMode,
   });
+  const { data: messages = [] } = useMessages(conversationId);
 
   useEffect(() => {
     if (!user) {
@@ -817,6 +820,13 @@ const Conference = () => {
   return (
     <>
       <ThreadShell
+        iconRail={
+          <ActionRail
+            conversationId={conversationId ?? undefined}
+            messages={messages}
+            conversationTitle={threadData?.rootPost.title ?? title}
+          />
+        }
         leftSidebar={leftSidebar}
         centerColumn={centerColumn}
         rightSidebar={rightSidebar}

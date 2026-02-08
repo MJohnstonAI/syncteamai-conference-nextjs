@@ -283,9 +283,6 @@ export async function POST(request: Request) {
 
     if (!usageLogged && resolvedUserId && resolvedModelId) {
       try {
-        if (!resolvedSupabase) {
-          throw new Error("missing supabase client");
-        }
         await writeUsageEvent({
           userId: resolvedUserId,
           conversationId: resolvedConversationId,

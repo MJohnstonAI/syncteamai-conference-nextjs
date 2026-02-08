@@ -5,6 +5,13 @@ import { useEffect } from "react";
 export interface Message {
   id: string;
   conversation_id: string;
+  parent_message_id: string | null;
+  thread_root_id: string | null;
+  round_id: string | null;
+  depth: number;
+  sort_key: string;
+  score: number;
+  is_highlight: boolean;
   role: "user" | "assistant" | "system";
   content: string;
   avatar_id: string | null;
@@ -23,6 +30,7 @@ export const useMessages = (conversationId: string | null, limit: number = 100) 
         .from("messages")
         .select("*")
         .eq("conversation_id", conversationId)
+        .order("sort_key", { ascending: true })
         .order("created_at", { ascending: true })
         .limit(limit);
 
@@ -73,11 +81,25 @@ export const useSendMessage = () => {
       role,
       content,
       avatarId,
+      parentMessageId,
+      roundId,
+      threadRootId,
+      depth,
+      sortKey,
+      score,
+      isHighlight,
     }: {
       conversationId: string;
       role: "user" | "assistant" | "system";
       content: string;
       avatarId?: string;
+      parentMessageId?: string | null;
+      roundId?: string | null;
+      threadRootId?: string | null;
+      depth?: number;
+      sortKey?: string;
+      score?: number;
+      isHighlight?: boolean;
     }) => {
       const { data, error } = await supabase
         .from("messages")
@@ -86,6 +108,13 @@ export const useSendMessage = () => {
           role,
           content,
           avatar_id: avatarId || null,
+          parent_message_id: parentMessageId ?? null,
+          round_id: roundId ?? null,
+          thread_root_id: threadRootId ?? null,
+          depth: depth ?? 0,
+          sort_key: sortKey ?? "",
+          score: score ?? 0,
+          is_highlight: isHighlight ?? false,
         })
         .select()
         .single();

@@ -153,8 +153,15 @@ export type Database = {
           content: string
           conversation_id: string
           created_at: string
+          depth: number
           id: string
+          is_highlight: boolean
+          parent_message_id: string | null
+          round_id: string | null
           role: string
+          score: number
+          sort_key: string
+          thread_root_id: string | null
           user_id: string | null
         }
         Insert: {
@@ -162,8 +169,15 @@ export type Database = {
           content: string
           conversation_id: string
           created_at?: string
+          depth?: number
           id?: string
+          is_highlight?: boolean
+          parent_message_id?: string | null
+          round_id?: string | null
           role: string
+          score?: number
+          sort_key?: string
+          thread_root_id?: string | null
           user_id?: string | null
         }
         Update: {
@@ -171,8 +185,15 @@ export type Database = {
           content?: string
           conversation_id?: string
           created_at?: string
+          depth?: number
           id?: string
+          is_highlight?: boolean
+          parent_message_id?: string | null
+          round_id?: string | null
           role?: string
+          score?: number
+          sort_key?: string
+          thread_root_id?: string | null
           user_id?: string | null
         }
         Relationships: [
@@ -181,6 +202,27 @@ export type Database = {
             columns: ["conversation_id"]
             isOneToOne: false
             referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_parent_message_id_fkey"
+            columns: ["parent_message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_round_id_fkey"
+            columns: ["round_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_thread_root_id_fkey"
+            columns: ["thread_root_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
             referencedColumns: ["id"]
           },
         ]

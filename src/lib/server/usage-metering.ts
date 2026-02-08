@@ -1,7 +1,7 @@
 import "server-only";
 
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { getModelById } from "@/data/openRouterModels";
+import { getSupabaseAdminClient } from "@/lib/server/supabase-server";
 
 type UsageInsert = {
   userId: string;
@@ -50,10 +50,7 @@ const estimateCostCents = ({
   };
 };
 
-export const writeUsageEvent = async (
-  supabase: SupabaseClient,
-  payload: UsageInsert
-): Promise<void> => {
+export const writeUsageEvent = async (payload: UsageInsert): Promise<void> => {
   const promptTokens = Math.max(0, safeNumber(payload.promptTokens));
   const completionTokens = Math.max(0, safeNumber(payload.completionTokens));
   const totalTokens = Math.max(
@@ -66,6 +63,7 @@ export const writeUsageEvent = async (
     completionTokens,
   });
 
+  const supabase = getSupabaseAdminClient();
   const { error } = await supabase.from("turn_usage_events").insert({
     user_id: payload.userId,
     conversation_id: payload.conversationId,

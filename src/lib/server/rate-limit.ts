@@ -25,15 +25,21 @@ const inMemoryIdempotency = new Map<string, number>();
 const inMemoryConcurrency = new Map<string, { count: number; expiresAt: number }>();
 const inMemoryCircuit = new Map<string, number>();
 
+const isProduction = process.env.NODE_ENV === "production";
+const trustProxyHeaders = process.env.TRUST_PROXY_HEADERS === "true";
+const upstashTimeoutMs = 2500;
+
 const getNow = () => Date.now();
 
 const getClientIp = (request: Request): string => {
-  const forwardedFor = request.headers.get("x-forwarded-for");
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0].trim();
+  if (trustProxyHeaders) {
+    const forwardedFor = request.headers.get("x-forwarded-for");
+    if (forwardedFor) {
+      return forwardedFor.split(",")[0].trim();
+    }
+    const realIp = request.headers.get("x-real-ip");
+    if (realIp) return realIp;
   }
-  const realIp = request.headers.get("x-real-ip");
-  if (realIp) return realIp;
   return "unknown";
 };
 
@@ -47,23 +53,32 @@ const upstashCommand = async (command: Array<string | number>) => {
   const config = getUpstashConfig();
   if (!config) return null;
 
-  const response = await fetch(config.url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(command),
-    cache: "no-store",
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), upstashTimeoutMs);
+  try {
+    const response = await fetch(config.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+      cache: "no-store",
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as UpstashResponse;
+    if (payload.error) return null;
+    return payload.result;
+  } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const payload = (await response.json()) as UpstashResponse;
-  if (payload.error) return null;
-  return payload.result;
 };
 
 const consumeInMemoryLimit = (
@@ -126,6 +141,9 @@ export const enforceRateLimit = async ({
   const key = `ratelimit:${scope}:${identifier}`;
   const distributedResult = await consumeUpstashLimit(key, limit, windowSec);
   if (distributedResult) return distributedResult;
+  if (isProduction) {
+    return { allowed: false, count: limit + 1, limit, retryAfterSec: windowSec };
+  }
   return consumeInMemoryLimit(key, limit, windowSec);
 };
 
@@ -150,6 +168,9 @@ export const claimIdempotencyKey = async ({
   if (setResult != null) {
     return setResult === "OK";
   }
+  if (isProduction) {
+    return false;
+  }
 
   const now = getNow();
   const existingExpiry = inMemoryIdempotency.get(scopedKey);
@@ -172,28 +193,50 @@ export const acquireUserConcurrencySlot = async ({
   const key = `concurrency:${userId}`;
 
   const releaseDistributed = async () => {
-    await upstashCommand(["DECR", key]);
+    const script = `
+      local next = redis.call("DECR", KEYS[1])
+      if next <= 0 then
+        redis.call("DEL", KEYS[1])
+        return 0
+      end
+      redis.call("EXPIRE", KEYS[1], tonumber(ARGV[1]))
+      return next
+    `;
+    await upstashCommand(["EVAL", script, "1", key, ttlSec]);
   };
 
-  const distributed = await upstashCommand(["INCR", key]);
-  if (distributed != null) {
-    const active = Number(distributed);
-    if (active === 1) {
-      await upstashCommand(["EXPIRE", key, ttlSec]);
-    }
-    if (active > maxConcurrent) {
-      await upstashCommand(["DECR", key]);
-      return {
-        acquired: false,
-        active,
-        release: async () => undefined,
-      };
-    }
+  const acquireScript = `
+    local current = redis.call("INCR", KEYS[1])
+    redis.call("EXPIRE", KEYS[1], tonumber(ARGV[2]))
+    if current > tonumber(ARGV[1]) then
+      local next = redis.call("DECR", KEYS[1])
+      if next <= 0 then
+        redis.call("DEL", KEYS[1])
+        next = 0
+      end
+      return {0, next}
+    end
+    return {1, current}
+  `;
+  const distributed = await upstashCommand([
+    "EVAL",
+    acquireScript,
+    "1",
+    key,
+    maxConcurrent,
+    ttlSec,
+  ]);
+  if (distributed != null && Array.isArray(distributed)) {
+    const acquired = Number(distributed[0]) === 1;
+    const active = Number(distributed[1] ?? 0);
     return {
-      acquired: true,
+      acquired,
       active,
-      release: releaseDistributed,
+      release: acquired ? releaseDistributed : async () => undefined,
     };
+  }
+  if (isProduction) {
+    return { acquired: false, active: maxConcurrent + 1, release: async () => undefined };
   }
 
   const now = getNow();
@@ -235,6 +278,9 @@ export const getCircuitCooldownSec = async (provider: "openrouter"): Promise<num
     if (Number.isFinite(ttl) && ttl > 0) return ttl;
     return 0;
   }
+  if (isProduction) {
+    return 15;
+  }
 
   const expiresAt = inMemoryCircuit.get(key);
   if (!expiresAt) return 0;
@@ -252,6 +298,7 @@ export const openCircuitFor = async ({
   const key = `circuit:${provider}:cooldown`;
   const distributed = await upstashCommand(["SET", key, "1", "EX", ttlSec]);
   if (distributed != null) return;
+  if (isProduction) return;
   inMemoryCircuit.set(key, getNow() + ttlSec * 1000);
 };
 

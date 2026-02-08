@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
-import { getSupabasePublicEnv } from "@/lib/server/env";
+import { getSupabasePublicEnv, getSupabaseServiceEnv } from "@/lib/server/env";
 
 const getBearerToken = (request: Request): string | null => {
   const header = request.headers.get("authorization");
@@ -30,6 +30,21 @@ export const createSupabaseServerClient = (
       detectSessionInUrl: false,
     },
   });
+};
+
+let adminClient: SupabaseClient | null = null;
+
+export const getSupabaseAdminClient = (): SupabaseClient => {
+  if (adminClient) return adminClient;
+  const { url, serviceRoleKey } = getSupabaseServiceEnv();
+  adminClient = createClient(url, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+  return adminClient;
 };
 
 export const requireRequestUser = async (

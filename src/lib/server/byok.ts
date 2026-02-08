@@ -118,9 +118,16 @@ export const saveByokKey = async ({
   const existing = await getUserApiKeyRow(supabase, userId, safeProvider);
   const existingLast4 = existing?.key_last4 ?? null;
 
-  const encryptedKey =
-    storeKey && normalizedKey ? encryptKey(normalizedKey) : storeKey ? existing?.encrypted_key ?? null : null;
-  const keyLast4 = normalizedKey ? resolveLast4(normalizedKey) : existingLast4;
+  const encryptedKey = storeKey
+    ? normalizedKey
+      ? encryptKey(normalizedKey)
+      : existing?.encrypted_key ?? null
+    : null;
+  const keyLast4 = storeKey
+    ? normalizedKey
+      ? resolveLast4(normalizedKey)
+      : existingLast4
+    : null;
 
   const { error } = await supabase.from("user_api_keys").upsert(
     {

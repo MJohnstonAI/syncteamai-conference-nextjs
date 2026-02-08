@@ -1,4 +1,4 @@
-import { createContext, useContext, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, ReactNode, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import { supabase } from "@/integrations/supabase/client";
 import type { User } from "@supabase/supabase-js";
@@ -25,14 +25,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [supabaseUser, setSupabaseUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const provisionedUsers = useRef<Set<string>>(new Set());
-
-  const bypassUser = useMemo<BasicUser | null>(() => {
-    const devBypassEmail = process.env.NEXT_PUBLIC_DEV_BYPASS_EMAIL as string | undefined;
-    const isDevEnvironment = process.env.NODE_ENV !== "production";
-    if (supabaseUser || !isDevEnvironment || !devBypassEmail) return null;
-    // Deterministic ID ensures downstream hooks can rely on a stable identifier.
-    return { id: `dev-bypass-${devBypassEmail}`, email: devBypassEmail };
-  }, [supabaseUser]);
 
   useEffect(() => {
     let isMounted = true;
@@ -101,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const mappedUser: BasicUser | null = supabaseUser
     ? { id: supabaseUser.id, email: supabaseUser.email ?? null }
-    : bypassUser;
+    : null;
 
   const signUp = async () => {
     navigate("/auth");

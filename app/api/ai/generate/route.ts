@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { requireRequestUser } from "@/lib/server/supabase-server";
 import { getEffectiveOpenRouterKey } from "@/lib/server/byok";
+import { canGenerate, getEntitlementTier } from "@/lib/server/entitlements";
 import {
   acquireUserConcurrencySlot,
   claimIdempotencyKey,
@@ -56,13 +56,11 @@ export async function POST(request: Request) {
   let resolvedRoundId: string | null = null;
   let resolvedModelId = "";
   let requestId: string | null = null;
-  let resolvedSupabase: SupabaseClient | null = null;
   const startedAt = Date.now();
   let slot: Awaited<ReturnType<typeof acquireUserConcurrencySlot>> | null = null;
 
   try {
     const { user, supabase } = await requireRequestUser(request);
-    resolvedSupabase = supabase;
     resolvedUserId = user.id;
 
     const body = bodySchema.parse(await request.json());
@@ -83,6 +81,17 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "Conversation not found." },
         { status: 404 }
+      );
+    }
+
+    const entitlement = await getEntitlementTier(supabase, user.id);
+    if (!canGenerate(entitlement)) {
+      return NextResponse.json(
+        {
+          error: "Access required. Contact support to enable AI generation.",
+          code: "ENTITLEMENT_REQUIRED",
+        },
+        { status: 403 }
       );
     }
 
@@ -154,7 +163,7 @@ export async function POST(request: Request) {
     slot = await acquireUserConcurrencySlot({
       userId: user.id,
       maxConcurrent: 2,
-      ttlSec: 120,
+      ttlSec: 300,
     });
     if (!slot.acquired) {
       return NextResponse.json(
@@ -202,7 +211,7 @@ export async function POST(request: Request) {
         await openCircuitFor({ provider: "openrouter", ttlSec: 20 });
       }
 
-      await writeUsageEvent(supabase, {
+      await writeUsageEvent({
         userId: user.id,
         conversationId: body.conversationId,
         roundId: body.roundId ?? null,
@@ -239,7 +248,7 @@ export async function POST(request: Request) {
       successResult.usage.total_tokens ?? promptTokens + completionTokens
     );
 
-    await writeUsageEvent(supabase, {
+    await writeUsageEvent({
       userId: user.id,
       conversationId: body.conversationId,
       roundId: body.roundId ?? null,
@@ -277,7 +286,7 @@ export async function POST(request: Request) {
         if (!resolvedSupabase) {
           throw new Error("missing supabase client");
         }
-        await writeUsageEvent(resolvedSupabase, {
+        await writeUsageEvent({
           userId: resolvedUserId,
           conversationId: resolvedConversationId,
           roundId: resolvedRoundId,

@@ -458,6 +458,9 @@ const Conference = () => {
             const retryAfter = payload.retryAfterSec ?? 10;
             throw new Error(`Rate limited. Retry in ${retryAfter}s.`);
           }
+          if (response.status === 403) {
+            throw new Error(payload.error || 'Access required to generate responses.');
+          }
           if (response.status === 503) {
             throw new Error('OpenRouter is busy right now. Please retry in a moment.');
           }

@@ -15,6 +15,11 @@ export const getSupabasePublicEnv = () => ({
   anonKey: requireEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
 });
 
+export const getSupabaseServiceEnv = () => ({
+  url: requireEnv("NEXT_PUBLIC_SUPABASE_URL"),
+  serviceRoleKey: requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
+});
+
 export const getOpenRouterBaseUrl = () =>
   (process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1").replace(
     /\/+$/,

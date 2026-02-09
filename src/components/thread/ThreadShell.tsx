@@ -10,11 +10,13 @@ import {
 
 export function ThreadShell({
   iconRail,
+  priorityCard,
   leftSidebar,
   centerColumn,
   rightSidebar,
 }: {
   iconRail?: React.ReactNode;
+  priorityCard?: React.ReactNode;
   leftSidebar: React.ReactNode;
   centerColumn: React.ReactNode;
   rightSidebar: React.ReactNode;
@@ -66,7 +68,12 @@ export function ThreadShell({
           <div className="h-full overflow-y-auto p-4">{leftSidebar}</div>
         </aside>
 
-        <main className="min-h-0">{centerColumn}</main>
+        <main className="min-h-0 flex flex-col">
+          {priorityCard ? (
+            <div className="border-b bg-background/95 px-4 py-3 backdrop-blur">{priorityCard}</div>
+          ) : null}
+          <div className="min-h-0 flex-1">{centerColumn}</div>
+        </main>
 
         <aside className="hidden min-h-0 border-l bg-muted/20 lg:block">
           <div className="h-full overflow-y-auto p-4">{rightSidebar}</div>

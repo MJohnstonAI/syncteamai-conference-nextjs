@@ -1,11 +1,9 @@
 import { Footer } from "@/components/Footer";
-import { useNavigate } from "@/lib/router";
 import { Home } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 
 const About = () => {
-  const navigate = useNavigate();
-
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Home Navigation */}
@@ -13,10 +11,12 @@ const About = () => {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => navigate("/")}
+          asChild
           className="text-foreground hover:text-primary"
         >
-          <Home className="h-6 w-6" />
+          <Link href="/" aria-label="Go home">
+            <Home className="h-6 w-6" />
+          </Link>
         </Button>
       </div>
 

@@ -1,4 +1,4 @@
-import { Link } from "@/lib/router";
+import Link from "next/link";
 
 export const Footer = () => {
   return (
@@ -6,11 +6,11 @@ export const Footer = () => {
       <div className="container mx-auto px-4">
         <div className="flex flex-col md:flex-row justify-between items-center gap-4 text-sm">
           <nav className="flex gap-4 text-muted-foreground">
-            <Link to="/about" className="hover:text-foreground transition-colors">
+            <Link href="/about" className="hover:text-foreground transition-colors">
               About
             </Link>
             <span className="text-muted-foreground/50">|</span>
-            <Link to="/contact" className="hover:text-foreground transition-colors">
+            <Link href="/contact" className="hover:text-foreground transition-colors">
               Contact
             </Link>
           </nav>
@@ -18,7 +18,7 @@ export const Footer = () => {
             © 2025 NeuroSync AI Dynamics (Pty) Ltd. All Rights Reserved | Version 1.4
           </p>
           <nav className="text-muted-foreground">
-            <Link to="/privacy" className="hover:text-foreground transition-colors">
+            <Link href="/privacy" className="hover:text-foreground transition-colors">
               Privacy
             </Link>
           </nav>

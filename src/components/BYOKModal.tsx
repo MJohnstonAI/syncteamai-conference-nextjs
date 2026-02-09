@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { useNavigate } from '@/lib/router';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -7,22 +6,34 @@ import { Settings, Key } from 'lucide-react';
 interface BYOKModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  returnTo?: string;
+  source?: string;
+  entry?: string;
 }
 
 /**
- * @deprecated This modal is deprecated in favor of the Settings page.
- * It now redirects users to /settings for multi-provider BYOK management.
+ * @deprecated This modal is retained only for compatibility.
+ * Prefer direct navigation to /settings with explicit context.
  */
-export function BYOKModal({ open, onOpenChange }: BYOKModalProps) {
+export function BYOKModal({
+  open,
+  onOpenChange,
+  returnTo = '/conference',
+  source = 'modal',
+  entry = 'legacy',
+}: BYOKModalProps) {
   const navigate = useNavigate();
 
-  useEffect(() => {
-    if (open) {
-      // Auto-redirect to settings when modal would open
-      navigate('/settings');
-      onOpenChange(false);
-    }
-  }, [open, navigate, onOpenChange]);
+  const openSettings = () => {
+    const params = new URLSearchParams({
+      source,
+      focus: 'byok',
+      entry,
+      return_to: returnTo,
+    });
+    navigate(`/settings?${params.toString()}`);
+    onOpenChange(false);
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -39,10 +50,10 @@ export function BYOKModal({ open, onOpenChange }: BYOKModalProps) {
 
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            You can now manage API keys for multiple providers (OpenAI, Anthropic, Google, xAI) from the Settings page.
+            BYOK is managed on Settings. Use the button below to continue with full context and then return.
           </p>
           
-          <Button onClick={() => navigate('/settings')} className="w-full">
+          <Button onClick={openSettings} className="w-full">
             <Settings className="h-4 w-4 mr-2" />
             Go to Settings
           </Button>

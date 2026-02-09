@@ -1,10 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Footer } from "@/components/Footer";
-import { useNavigate } from "@/lib/router";
+import Link from "next/link";
 
 const Index = () => {
-  const navigate = useNavigate();
-
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Hero Section with Background */}
@@ -33,12 +31,12 @@ const Index = () => {
               Act as the Creative Director and guide multiple AI models collaborating in real-time on a single canvas. Your vision, orchestrated.
             </p>
 
-            <Button 
-              size="lg" 
-              onClick={() => navigate("/templates")} 
+            <Button
+              size="lg"
+              asChild
               className="text-lg px-8 bg-primary hover:bg-primary/90 focus-visible:ring-primary/50"
             >
-              Start Building Your AI Council
+              <Link href="/templates">Start Building Your AI Council</Link>
             </Button>
           </div>
         </div>

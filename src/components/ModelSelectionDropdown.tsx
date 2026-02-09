@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronsUpDown, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -25,6 +25,8 @@ interface ModelSelectionDropdownProps {
   onSelectionChange: (models: string[]) => void;
   disabled?: boolean;
   maxSelections?: number;
+  openSignal?: number;
+  emphasize?: boolean;
 }
 
 export function ModelSelectionDropdown({
@@ -32,9 +34,17 @@ export function ModelSelectionDropdown({
   onSelectionChange,
   disabled = false,
   maxSelections = 6,
+  openSignal,
+  emphasize = false,
 }: ModelSelectionDropdownProps) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    if (!disabled && typeof openSignal === "number" && openSignal > 0) {
+      setOpen(true);
+    }
+  }, [disabled, openSignal]);
 
   const groupedModels = useMemo(() => getModelsByProvider(), []);
 
@@ -74,7 +84,10 @@ export function ModelSelectionDropdown({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between"
+          className={cn(
+            "w-full justify-between",
+            emphasize && "ring-1 ring-primary/40 ring-offset-1"
+          )}
           disabled={disabled}
         >
           <span className="truncate">
@@ -162,4 +175,3 @@ export function ModelSelectionDropdown({
     </Popover>
   );
 }
-

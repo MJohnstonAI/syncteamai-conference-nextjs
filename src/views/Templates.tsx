@@ -1,3 +1,5 @@
+"use client";
+
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "@/lib/router";
 import { DemoBanner } from "@/components/DemoBanner";

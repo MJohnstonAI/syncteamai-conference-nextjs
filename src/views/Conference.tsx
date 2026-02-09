@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { BYOKModal } from "@/components/BYOKModal";
 import { ModelSelectionDropdown } from "@/components/ModelSelectionDropdown";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { RootPostCard } from "@/components/thread/RootPostCard";
@@ -30,7 +29,7 @@ import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
 import { getAgentMeta } from "@/lib/agents";
 import type { ThreadSort } from "@/lib/thread/types";
-import { Key, Loader2, Sparkles, Square } from "lucide-react";
+import { ArrowRight, Key, Loader2, Sparkles, Square } from "lucide-react";
 
 type TranscriptMessage = {
   role: "user" | "assistant" | "system";
@@ -45,6 +44,14 @@ type AgentRunState = {
   preview: string;
   error: string | null;
 };
+
+type NextStepState =
+  | "session_booting"
+  | "pending_run"
+  | "partial_failure"
+  | "no_byok"
+  | "no_active_models"
+  | "idle";
 
 const Conference = () => {
   const [searchParams] = useSearchParams();
@@ -63,7 +70,6 @@ const Conference = () => {
   } = useBYOK();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [showBYOKModal, setShowBYOKModal] = useState(false);
   const [sortMode, setSortMode] = useState<ThreadSort>("new");
   const [roundFilter, setRoundFilter] = useState<string>("all");
   const [agentFilter, setAgentFilter] = useState<string>("all");
@@ -78,11 +84,13 @@ const Conference = () => {
   const [agentRunStates, setAgentRunStates] = useState<Record<string, AgentRunState>>({});
   const [failedAgentIds, setFailedAgentIds] = useState<string[]>([]);
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null);
+  const [modelSelectionOpenSignal, setModelSelectionOpenSignal] = useState(0);
 
   const hasCreatedConversation = useRef(false);
   const generationAbortRef = useRef<AbortController | null>(null);
   const roundTranscriptRef = useRef<TranscriptMessage[]>([]);
   const roundMessageIdRef = useRef<string | null>(null);
+  const rootComposerRef = useRef<HTMLDivElement | null>(null);
 
   const title = searchParams.get("title") || "Conference";
   const script = searchParams.get("script") || "";
@@ -724,6 +732,191 @@ const Conference = () => {
     navigate("/conference");
   }, [navigate]);
 
+  const conferenceReturnPath = useMemo(() => {
+    const query = searchParams.toString();
+    return query ? `/conference?${query}` : "/conference";
+  }, [searchParams]);
+
+  const navigateToSettingsForByok = useCallback(
+    (entry: "next_step" | "sidebar" | "alert") => {
+      const params = new URLSearchParams({
+        source: "conference",
+        focus: "byok",
+        entry,
+        return_to: conferenceReturnPath,
+      });
+      navigate(`/settings?${params.toString()}`);
+    },
+    [conferenceReturnPath, navigate]
+  );
+
+  const focusRootComposer = useCallback(() => {
+    const textarea = rootComposerRef.current?.querySelector("textarea");
+    if (textarea instanceof HTMLTextAreaElement) {
+      textarea.focus();
+      textarea.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
+
+  const openModelSelection = useCallback(() => {
+    setModelSelectionOpenSignal((previous) => previous + 1);
+  }, []);
+
+  const nextStepState = useMemo<NextStepState>(() => {
+    if (!conversationId) return "session_booting";
+    if (isAiThinking || pendingParentId !== null) return "pending_run";
+    if (failedAgentIds.length > 0) return "partial_failure";
+    if (!hasPrivilegedAccess || !hasConfiguredOpenRouterKey) return "no_byok";
+    if (activeAvatarIds.length === 0) return "no_active_models";
+    return "idle";
+  }, [
+    activeAvatarIds.length,
+    conversationId,
+    failedAgentIds.length,
+    hasConfiguredOpenRouterKey,
+    hasPrivilegedAccess,
+    isAiThinking,
+    pendingParentId,
+  ]);
+
+  const nextStepMeta = useMemo(() => {
+    switch (nextStepState) {
+      case "session_booting":
+        return {
+          badgeVariant: "outline" as const,
+          badgeLabel: "Preparing",
+          title: "Setting up your conference session",
+          description: "We are loading the conversation context and controls.",
+          actionLabel: "Please wait",
+          actionVariant: "outline" as const,
+          actionDisabled: true,
+        };
+      case "pending_run":
+        return {
+          badgeVariant: "secondary" as const,
+          badgeLabel: "In Progress",
+          title: isAiThinking ? "Agents are running this round" : "Posting your message",
+          description: isAiThinking
+            ? "Wait for completion or stop now if you need to change direction."
+            : "Your prompt is being posted to the thread.",
+          actionLabel: isAiThinking ? "Stop run" : "Sending...",
+          actionVariant: "outline" as const,
+          actionDisabled: !isAiThinking,
+        };
+      case "partial_failure":
+        return {
+          badgeVariant: "destructive" as const,
+          badgeLabel: "Recovery",
+          title: "Recover failed agent responses",
+          description: `${failedAgentIds.length} agent response(s) failed in the active round.`,
+          actionLabel: "Retry failed agents",
+          actionVariant: "default" as const,
+          actionDisabled: false,
+        };
+      case "no_byok":
+        return {
+          badgeVariant: "outline" as const,
+          badgeLabel: "Access",
+          title: hasPrivilegedAccess ? "Configure BYOK before running agents" : "Unlock model access first",
+          description: hasPrivilegedAccess
+            ? "Add your OpenRouter key so the conference can generate agent replies."
+            : "Your role is pending. Upgrade to enable model configuration and agent runs.",
+          actionLabel: hasPrivilegedAccess ? "Configure BYOK" : "Open subscription",
+          actionVariant: "default" as const,
+          actionDisabled: false,
+        };
+      case "no_active_models":
+        return {
+          badgeVariant: "outline" as const,
+          badgeLabel: "Setup",
+          title: "Pick active models for this round",
+          description: "Select at least one active model to receive agent replies.",
+          actionLabel: "Pick models",
+          actionVariant: "default" as const,
+          actionDisabled: false,
+        };
+      case "idle":
+      default:
+        return {
+          badgeVariant: "secondary" as const,
+          badgeLabel: "Ready",
+          title: threadNodes.length === 0 ? "Send your first prompt" : "Drive the next step",
+          description:
+            threadNodes.length === 0
+              ? "Ask the team to begin so each active agent can respond in sequence."
+              : "Post the next instruction or argument to continue the debate.",
+          actionLabel: threadNodes.length === 0 ? "Send first prompt" : "Compose next prompt",
+          actionVariant: "default" as const,
+          actionDisabled: false,
+        };
+    }
+  }, [failedAgentIds.length, hasPrivilegedAccess, isAiThinking, nextStepState, threadNodes.length]);
+
+  const handleNextStepPrimaryAction = useCallback(() => {
+    switch (nextStepState) {
+      case "pending_run":
+        if (isAiThinking) {
+          cancelAgentGeneration();
+        }
+        return;
+      case "partial_failure":
+        void retryAllFailedAgents();
+        return;
+      case "no_byok":
+        if (hasPrivilegedAccess) {
+          navigateToSettingsForByok("next_step");
+        } else {
+          navigate("/subscribe");
+        }
+        return;
+      case "no_active_models":
+        openModelSelection();
+        return;
+      case "idle":
+        focusRootComposer();
+        return;
+      case "session_booting":
+      default:
+        return;
+    }
+  }, [
+    cancelAgentGeneration,
+    focusRootComposer,
+    hasPrivilegedAccess,
+    isAiThinking,
+    navigate,
+    navigateToSettingsForByok,
+    nextStepState,
+    openModelSelection,
+    retryAllFailedAgents,
+  ]);
+
+  const priorityCard = (
+    <section className="mx-auto w-full max-w-4xl rounded-lg border bg-card p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">What Next</p>
+            <Badge variant={nextStepMeta.badgeVariant}>{nextStepMeta.badgeLabel}</Badge>
+          </div>
+          <h2 className="text-sm font-semibold">{nextStepMeta.title}</h2>
+          <p className="text-xs text-muted-foreground">{nextStepMeta.description}</p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={nextStepMeta.actionVariant}
+          onClick={handleNextStepPrimaryAction}
+          disabled={nextStepMeta.actionDisabled}
+          className="sm:min-w-44"
+        >
+          {nextStepMeta.actionLabel}
+          <ArrowRight className="ml-2 h-4 w-4" />
+        </Button>
+      </div>
+    </section>
+  );
+
   const leftSidebar = (
     <div className="space-y-4">
       <section className="rounded-lg border bg-card p-3">
@@ -898,7 +1091,12 @@ const Conference = () => {
 
       <section className="space-y-2 rounded-lg border bg-card p-3">
         {hasPrivilegedAccess ? (
-          <Button variant="outline" size="sm" className="w-full" onClick={() => setShowBYOKModal(true)}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => navigateToSettingsForByok("sidebar")}
+          >
             <Key className="mr-2 h-4 w-4" />
             {hasConfiguredOpenRouterKey ? "Manage BYOK" : "Enable BYOK"}
           </Button>
@@ -942,7 +1140,7 @@ const Conference = () => {
             <AlertTitle>BYOK Needed for Agent Replies</AlertTitle>
             <AlertDescription className="flex items-center justify-between gap-3">
               <span>Add your OpenRouter key to continue multi-agent generation.</span>
-              <Button size="sm" onClick={() => setShowBYOKModal(true)}>
+              <Button size="sm" onClick={() => navigateToSettingsForByok("alert")}>
                 Configure
               </Button>
             </AlertDescription>
@@ -1064,21 +1262,25 @@ const Conference = () => {
             selectedModels={selectedModels}
             onSelectionChange={setSelectedModels}
             disabled={!hasConfiguredOpenRouterKey || !hasPrivilegedAccess || isAiThinking}
+            openSignal={modelSelectionOpenSignal}
+            emphasize={nextStepState === "no_active_models"}
           />
-          <ThreadComposer
-            value={rootDraft}
-            onChange={setRootDraft}
-            onSubmit={() => {
-              void submitReply({
-                parentMessageId: null,
-                content: rootDraft,
-                clear: () => setRootDraft(""),
-              });
-            }}
-            placeholder="Post your argument or ask the agents to debate..."
-            pending={pendingParentId === "root" || isAiThinking}
-            disabled={!conversationId}
-          />
+          <div ref={rootComposerRef}>
+            <ThreadComposer
+              value={rootDraft}
+              onChange={setRootDraft}
+              onSubmit={() => {
+                void submitReply({
+                  parentMessageId: null,
+                  content: rootDraft,
+                  clear: () => setRootDraft(""),
+                });
+              }}
+              placeholder="Post your argument or ask the agents to debate..."
+              pending={pendingParentId === "root" || isAiThinking}
+              disabled={!conversationId}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -1181,11 +1383,11 @@ const Conference = () => {
             conversationTitle={firstThreadPage?.rootPost.title ?? title}
           />
         }
+        priorityCard={priorityCard}
         leftSidebar={leftSidebar}
         centerColumn={centerColumn}
         rightSidebar={rightSidebar}
       />
-      <BYOKModal open={showBYOKModal} onOpenChange={setShowBYOKModal} />
     </>
   );
 };

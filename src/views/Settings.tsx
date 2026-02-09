@@ -1,5 +1,5 @@
-﻿import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from '@/lib/router';
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from '@/lib/router';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -26,6 +26,7 @@ type UsagePayload = {
 };
 
 export default function Settings() {
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { toast } = useToast();
   const {
@@ -49,6 +50,19 @@ export default function Settings() {
   const [isRemoving, setIsRemoving] = useState(false);
   const [usageItems, setUsageItems] = useState<UsageItem[]>([]);
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
+  const [highlightByokCard, setHighlightByokCard] = useState(false);
+  const byokCardRef = useRef<HTMLDivElement | null>(null);
+
+  const source = searchParams.get('source');
+  const entry = searchParams.get('entry');
+  const focus = searchParams.get('focus');
+  const returnTo = searchParams.get('return_to');
+  const conferenceReturnPath = useMemo(() => {
+    if (returnTo && returnTo.startsWith('/conference')) {
+      return returnTo;
+    }
+    return '/conference';
+  }, [returnTo]);
 
   const maskedSessionKey = openRouterKey
     ? `session key ending in ${openRouterKey.slice(-4)}`
@@ -75,6 +89,14 @@ export default function Settings() {
   useEffect(() => {
     void loadUsage();
   }, [loadUsage]);
+
+  useEffect(() => {
+    if (focus !== 'byok') return;
+    byokCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setHighlightByokCard(true);
+    const timer = window.setTimeout(() => setHighlightByokCard(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [focus]);
 
   const handleSave = async () => {
     const trimmed = keyInput.trim();
@@ -186,7 +208,7 @@ export default function Settings() {
   return (
     <div className="min-h-screen bg-background">
       <div className="container max-w-4xl mx-auto py-8 px-4 space-y-6">
-        <Button variant="ghost" onClick={() => navigate('/conference')} className="mb-2">
+        <Button variant="ghost" onClick={() => navigate(conferenceReturnPath)} className="mb-2">
           <ArrowLeft className="h-4 w-4 mr-2" /> Back to Conference
         </Button>
 
@@ -195,7 +217,17 @@ export default function Settings() {
           <p className="text-muted-foreground">Manage your AI connections and preferences</p>
         </div>
 
-        <Card>
+        {source === 'conference' ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">Opened from Conference</Badge>
+            {entry ? <Badge variant="outline">Entry: {entry}</Badge> : null}
+          </div>
+        ) : null}
+
+        <Card
+          ref={byokCardRef}
+          className={highlightByokCard ? 'border-primary shadow-[0_0_0_1px_hsl(var(--primary))]' : undefined}
+        >
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Key className="h-5 w-5" /> Open Router API Key

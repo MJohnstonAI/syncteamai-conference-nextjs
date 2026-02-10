@@ -130,6 +130,20 @@ const getGroupIcon = (groupName: string): LucideIcon => {
   return Folder;
 };
 
+const getGroupAccentClass = (groupName: string) => {
+  const normalized = groupName.toLowerCase();
+  if (normalized.includes("marketing") || normalized.includes("brand")) return "text-pink-500";
+  if (normalized.includes("product") || normalized.includes("design")) return "text-violet-500";
+  if (normalized.includes("sales") || normalized.includes("business")) return "text-amber-500";
+  if (normalized.includes("engineering") || normalized.includes("code")) return "text-indigo-500";
+  if (normalized.includes("research") || normalized.includes("science")) return "text-teal-500";
+  if (normalized.includes("team") || normalized.includes("people")) return "text-sky-500";
+  if (normalized.includes("strategy") || normalized.includes("analysis")) return "text-blue-500";
+  if (normalized.includes("global") || normalized.includes("market")) return "text-cyan-500";
+  if (normalized.includes("education") || normalized.includes("learning")) return "text-emerald-500";
+  return "text-slate-500";
+};
+
 const toDisplayDate = (value: string) => {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return "Unknown date";
@@ -451,17 +465,17 @@ const Templates = () => {
           setMobileGroupsOpen(false);
         }}
         className={cn(
-          "group relative flex w-full items-center rounded-lg px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-          compact ? "justify-center px-2" : "gap-3",
-          active
-            ? "bg-primary/10 text-primary"
-            : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          "templates-micro-badge group relative flex w-full items-center rounded-full px-4 py-2.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+          compact ? "justify-center px-2.5" : "gap-3 text-left",
+          active ? "templates-pill-active" : "text-slate-600 hover:bg-white/90 hover:text-slate-900"
         )}
       >
-        {active ? (
-          <span className="absolute left-0 top-1.5 h-6 w-1 rounded-r bg-primary" aria-hidden="true" />
-        ) : null}
-        <Icon className={cn("h-4 w-4 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
+        <Icon
+          className={cn(
+            "h-4 w-4 shrink-0 transition-colors",
+            active ? "text-white" : getGroupAccentClass(label)
+          )}
+        />
         {compact ? null : <span className="truncate">{label}</span>}
       </button>
     );
@@ -479,9 +493,9 @@ const Templates = () => {
   };
 
   const GroupsSidebar = ({ mobile }: { mobile: boolean }) => (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className={cn("text-sm font-semibold", !mobile && sidebarCollapsed && "sr-only")}>Groups</h2>
+        <h2 className={cn("templates-kicker", !mobile && sidebarCollapsed && "sr-only")}>Collections</h2>
         {!mobile ? (
           <Button
             type="button"
@@ -489,6 +503,7 @@ const Templates = () => {
             size="icon"
             aria-label={sidebarCollapsed ? "Expand groups sidebar" : "Collapse groups sidebar"}
             onClick={() => setSidebarCollapsed((previous) => !previous)}
+            className="h-9 w-9 rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
           >
             {sidebarCollapsed ? (
               <PanelLeft className="h-4 w-4" />
@@ -499,9 +514,9 @@ const Templates = () => {
         ) : null}
       </div>
 
-      <ScrollArea className={cn(mobile ? "h-[65vh]" : "h-[calc(100vh-13rem)]")}>
+      <ScrollArea className={cn(mobile ? "h-[65vh]" : "h-[calc(100vh-14.5rem)]")}>
         <TooltipProvider delayDuration={120}>
-          <div className="space-y-1 pr-2">
+          <div className="space-y-2 pr-2">
             {renderGroupButton({
               groupId: "all",
               label: "All Groups",
@@ -513,7 +528,7 @@ const Templates = () => {
                 {Array.from({ length: 7 }).map((_, index) => (
                   <Skeleton
                     key={`group-skeleton-${index}`}
-                    className={cn("h-9", sidebarCollapsed && !mobile ? "w-9 rounded-lg" : "w-full")}
+                    className={cn("h-10 rounded-full", sidebarCollapsed && !mobile ? "w-10" : "w-full")}
                   />
                 ))}
               </>
@@ -533,21 +548,21 @@ const Templates = () => {
   );
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto w-full max-w-[1440px] px-4 pb-10 pt-6 sm:px-6 lg:px-8">
-        <div className="flex gap-6">
+    <div className="templates-shell min-h-screen" data-templates-page>
+      <div className="mx-auto w-full max-w-[1600px] px-4 pb-12 pt-6 sm:px-6 lg:px-10">
+        <div className="flex gap-8">
           <aside
             className={cn(
-              "sticky top-6 hidden self-start rounded-xl border bg-card p-3 md:block",
-              sidebarCollapsed ? "w-20" : "w-72"
+              "templates-glass-sidebar templates-panel sticky top-6 hidden self-start rounded-3xl p-4 md:block",
+              sidebarCollapsed ? "w-24" : "w-72"
             )}
           >
             <GroupsSidebar mobile={false} />
           </aside>
 
-          <main className="min-w-0 flex-1 space-y-6">
-            <header className="space-y-5 rounded-xl border bg-card p-5">
-              <div className="flex items-start justify-between gap-3">
+          <main className="min-w-0 flex-1 space-y-7">
+            <header className="templates-panel rounded-[1.75rem] p-5 sm:p-7">
+              <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <HomeIcon />
                   <Sheet open={mobileGroupsOpen} onOpenChange={setMobileGroupsOpen}>
@@ -556,16 +571,16 @@ const Templates = () => {
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="md:hidden"
+                        className="rounded-full border-slate-200 bg-white px-4 text-xs font-semibold uppercase tracking-[0.1em] text-slate-600 md:hidden"
                         aria-label="Open groups sidebar"
                       >
                         <PanelLeft className="h-4 w-4" />
                         Groups
                       </Button>
                     </SheetTrigger>
-                    <SheetContent side="left" className="w-[88vw] sm:max-w-sm" aria-label="Template groups">
+                    <SheetContent side="left" className="w-[88vw] bg-[#f8f9fb] sm:max-w-sm" aria-label="Template groups">
                       <SheetHeader className="pb-4">
-                        <SheetTitle>Groups</SheetTitle>
+                        <SheetTitle className="templates-serif">Groups</SheetTitle>
                         <SheetDescription>Filter templates by category.</SheetDescription>
                       </SheetHeader>
                       <GroupsSidebar mobile />
@@ -574,19 +589,25 @@ const Templates = () => {
                 </div>
               </div>
 
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Browse Templates</h1>
-                  <p className="mt-1 text-sm text-muted-foreground sm:text-base">
+              <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                <div className="space-y-3">
+                  <p className="templates-kicker flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                    Marketplace
+                  </p>
+                  <h1 className="templates-serif text-4xl leading-[1.02] text-slate-900 sm:text-5xl md:text-6xl dark:text-slate-100">
+                    Browse <span className="templates-hero-gradient">Templates</span>
+                  </h1>
+                  <p className="templates-text-muted max-w-2xl text-base leading-relaxed sm:text-lg">
                     Choose a template to start your AI conference
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-3 pb-1">
                   <Button
                     type="button"
                     onClick={() => setCreateDialogOpen(true)}
                     disabled={!canCreate}
-                    className="min-w-36"
+                    className="templates-primary-cta h-11 min-w-40 rounded-full px-6 text-xs font-bold uppercase tracking-[0.1em] hover:opacity-95"
                   >
                     <Plus className="mr-2 h-4 w-4" />
                     New Template
@@ -596,34 +617,34 @@ const Templates = () => {
                     variant={role === "paid" || role === "free" ? "secondary" : "outline"}
                     onClick={handleUpgradeClick}
                     disabled={role === "paid" || role === "free"}
-                    className="min-w-44"
+                    className="h-11 min-w-48 rounded-full border-slate-200 bg-white/95 px-6 text-xs font-semibold uppercase tracking-[0.08em] text-slate-700 hover:bg-slate-50"
                   >
                     {role === "paid" || role === "free" ? "Subscribed" : "Upgrade to Pro $20/mo"}
                   </Button>
                 </div>
               </div>
 
-              {!user ? <DemoBanner /> : null}
+              {!user ? <div className="mt-6"><DemoBanner /></div> : null}
             </header>
 
-            <section className="space-y-4 rounded-xl border bg-card p-4">
+            <section className="templates-panel space-y-5 rounded-[1.5rem] p-4 sm:p-5">
               <div className="grid gap-3 lg:grid-cols-[minmax(0,1.6fr)_220px_220px]">
                 <div className="relative">
                   <Label htmlFor="templates-search" className="sr-only">
                     Search templates
                   </Label>
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <Input
                     id="templates-search"
                     ref={searchInputRef}
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
                     placeholder="Search templates by title, tags, agents..."
-                    className="pl-9"
+                    className="h-11 rounded-full border-slate-200 bg-white pl-11 text-sm"
                   />
                 </div>
                 <Select value={selectedGroup} onValueChange={setSelectedGroup}>
-                  <SelectTrigger aria-label="Filter templates by group">
+                  <SelectTrigger aria-label="Filter templates by group" className="h-11 rounded-full border-slate-200 bg-white">
                     <SelectValue placeholder="All Groups" />
                   </SelectTrigger>
                   <SelectContent>
@@ -636,8 +657,8 @@ const Templates = () => {
                   </SelectContent>
                 </Select>
                 <Select value={sortMode} onValueChange={(value: TemplateSort) => setSortMode(value)}>
-                  <SelectTrigger aria-label="Sort templates">
-                    <ArrowUpDown className="mr-2 h-4 w-4 text-muted-foreground" />
+                  <SelectTrigger aria-label="Sort templates" className="h-11 rounded-full border-slate-200 bg-white">
+                    <ArrowUpDown className="mr-2 h-4 w-4 text-slate-500" />
                     <SelectValue placeholder="Newest" />
                   </SelectTrigger>
                   <SelectContent>
@@ -648,25 +669,37 @@ const Templates = () => {
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-slate-200 bg-white p-1">
                   {typeFilters.map((filter) => (
                     <Button
                       key={filter.value}
                       type="button"
                       size="sm"
-                      variant={typeFilter === filter.value ? "default" : "outline"}
+                      variant="ghost"
                       onClick={() => setTypeFilter(filter.value)}
+                      className={cn(
+                        "rounded-full px-4 text-xs font-semibold uppercase tracking-[0.1em]",
+                        typeFilter === filter.value
+                          ? "templates-pill-active hover:opacity-95"
+                          : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                      )}
                     >
                       {filter.label}
                     </Button>
                   ))}
                 </div>
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="text-muted-foreground">
+                  <span className="templates-text-muted text-xs font-medium uppercase tracking-[0.1em]">
                     {filteredTemplates.length} result{filteredTemplates.length === 1 ? "" : "s"}
                   </span>
                   {hasActiveFilters ? (
-                    <Button type="button" size="sm" variant="ghost" onClick={clearFilters}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={clearFilters}
+                      className="rounded-full text-xs font-semibold uppercase tracking-[0.08em] text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    >
                       Clear filters
                     </Button>
                   ) : null}
@@ -677,9 +710,9 @@ const Templates = () => {
             {promptsLoading ? (
               <section className="grid gap-4">
                 {Array.from({ length: 5 }).map((_, index) => (
-                  <div key={`template-loading-${index}`} className="rounded-xl border bg-card p-4">
-                    <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)]">
-                      <Skeleton className="h-36 w-full rounded-lg" />
+                  <div key={`template-loading-${index}`} className="templates-panel rounded-2xl p-3">
+                    <div className="grid gap-4 md:grid-cols-[260px_minmax(0,1fr)]">
+                      <Skeleton className="h-44 w-full rounded-xl" />
                       <div className="space-y-3">
                         <Skeleton className="h-4 w-40" />
                         <Skeleton className="h-8 w-3/4" />
@@ -697,14 +730,16 @@ const Templates = () => {
             ) : null}
 
             {isFirstTimeEmpty ? (
-              <section className="rounded-xl border border-dashed bg-card/50 p-10 text-center">
-                <h2 className="text-xl font-semibold">Create your first template</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
+              <section className="templates-panel rounded-2xl border-dashed p-10 text-center">
+                <h2 className="templates-serif text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                  Create your first template
+                </h2>
+                <p className="templates-text-muted mt-2 text-sm">
                   Start a reusable conference blueprint and launch sessions in one click.
                 </p>
                 <Button
                   type="button"
-                  className="mt-5"
+                  className="templates-primary-cta mt-5 rounded-full px-6 text-xs font-bold uppercase tracking-[0.1em]"
                   onClick={() => setCreateDialogOpen(true)}
                   disabled={!canCreate}
                 >
@@ -715,19 +750,26 @@ const Templates = () => {
             ) : null}
 
             {isFilteredEmpty ? (
-              <section className="rounded-xl border border-dashed bg-card/50 p-10 text-center">
-                <h2 className="text-xl font-semibold">No templates found</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
+              <section className="templates-panel rounded-2xl border-dashed p-10 text-center">
+                <h2 className="templates-serif text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                  No templates found
+                </h2>
+                <p className="templates-text-muted mt-2 text-sm">
                   Try a different search term or clear the active filters.
                 </p>
-                <Button type="button" variant="outline" className="mt-5" onClick={clearFilters}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-5 rounded-full border-slate-200 px-5 text-xs font-semibold uppercase tracking-[0.1em]"
+                  onClick={clearFilters}
+                >
                   Clear filters
                 </Button>
               </section>
             ) : null}
 
             {!promptsLoading && filteredTemplates.length > 0 ? (
-              <section className="grid gap-4">
+              <section className="grid gap-5">
                 {filteredTemplates.map((prompt) => {
                   const canEdit = canEditTemplate(prompt, role, userId);
                   const groupLabel = groupNameLookup.get(prompt.group_id ?? "") ?? "Uncategorized";
@@ -745,10 +787,10 @@ const Templates = () => {
                   return (
                     <article
                       key={prompt.id}
-                      className="group rounded-xl border bg-card p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg focus-within:ring-2 focus-within:ring-primary/40"
+                      className="group templates-panel rounded-2xl p-2.5 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl focus-within:ring-2 focus-within:ring-primary/35 md:p-3"
                     >
-                      <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)]">
-                        <div className="overflow-hidden rounded-lg border bg-muted/40">
+                      <div className="flex flex-col gap-5 md:flex-row md:items-stretch">
+                        <div className="templates-inset-cover relative w-full overflow-hidden rounded-xl bg-slate-100 md:w-[260px] md:flex-shrink-0">
                           <AspectRatio ratio={16 / 9}>
                             {prompt.image_url ? (
                               <img
@@ -764,43 +806,97 @@ const Templates = () => {
                                 )}
                               >
                                 <div className="absolute inset-0 bg-black/15" />
-                                <div className="relative flex items-center gap-2 text-sm font-medium">
-                                  <Sparkles className="h-4 w-4" />
-                                  <span className="truncate">{groupLabel}</span>
+                                <div className="relative flex items-center gap-2">
+                                  <span className="templates-micro-badge inline-flex rounded-md bg-white/85 px-2 py-1 text-[10px] text-slate-900">
+                                    {groupLabel}
+                                  </span>
                                 </div>
                               </div>
                             )}
                           </AspectRatio>
+                          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/45 to-transparent px-4 py-3">
+                            <div className="flex items-center gap-2 text-white/90">
+                              <Sparkles className="h-4 w-4" />
+                              <span className="text-xs font-semibold tracking-wide">
+                                {durationLabel ?? "Agent-ready"}
+                              </span>
+                            </div>
+                          </div>
                         </div>
 
-                        <div className="min-w-0 space-y-3">
+                        <div className="flex min-w-0 flex-1 flex-col justify-center space-y-3 py-2 pr-2">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant={prompt.is_demo ? "default" : "secondary"}>{visibilityLabel}</Badge>
-                              <Badge variant="outline">{groupLabel}</Badge>
+                              <Badge
+                                variant="secondary"
+                                className={cn(
+                                  "templates-micro-badge rounded-full px-3 py-1 text-[10px]",
+                                  prompt.is_demo
+                                    ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200"
+                                    : "bg-slate-100 text-slate-700 dark:bg-slate-700/50 dark:text-slate-200"
+                                )}
+                              >
+                                {visibilityLabel}
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className="templates-micro-badge rounded-full border-slate-200 px-3 py-1 text-[10px] text-slate-600 dark:border-slate-600 dark:text-slate-300"
+                              >
+                                {groupLabel}
+                              </Badge>
                             </div>
-                            <span className="text-xs text-muted-foreground">{toDisplayDate(prompt.created_at)}</span>
+                            <span className="templates-text-muted text-xs font-medium uppercase tracking-[0.1em]">
+                              {toDisplayDate(prompt.created_at)}
+                            </span>
                           </div>
 
                           <div>
-                            <h3 className="text-xl font-semibold leading-tight">{prompt.title}</h3>
-                            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+                            <h3 className="templates-serif text-3xl leading-tight text-slate-900 transition-colors duration-300 group-hover:text-indigo-600 dark:text-slate-100 dark:group-hover:text-indigo-300">
+                              {prompt.title}
+                            </h3>
+                            <p className="templates-text-muted mt-2 line-clamp-2 text-sm leading-relaxed">
                               {prompt.description || "No description provided."}
                             </p>
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2">
                             {agents.length > 0 ? (
-                              <Badge variant="outline">{agents.length} AI Agents</Badge>
+                              <Badge
+                                variant="outline"
+                                className="templates-micro-badge rounded-full border-slate-200 px-3 py-1 text-[10px] text-slate-600 dark:border-slate-600 dark:text-slate-300"
+                              >
+                                {agents.length} AI Agents
+                              </Badge>
                             ) : (
-                              <Badge variant="outline">Agent-ready</Badge>
+                              <Badge
+                                variant="outline"
+                                className="templates-micro-badge rounded-full border-slate-200 px-3 py-1 text-[10px] text-slate-600 dark:border-slate-600 dark:text-slate-300"
+                              >
+                                Agent-ready
+                              </Badge>
                             )}
-                            <Badge variant="outline">{modeLabel}</Badge>
-                            {durationLabel ? <Badge variant="outline">{durationLabel}</Badge> : null}
+                            <Badge
+                              variant="outline"
+                              className="templates-micro-badge rounded-full border-slate-200 px-3 py-1 text-[10px] text-slate-600 dark:border-slate-600 dark:text-slate-300"
+                            >
+                              {modeLabel}
+                            </Badge>
+                            {durationLabel ? (
+                              <Badge
+                                variant="outline"
+                                className="templates-micro-badge rounded-full border-slate-200 px-3 py-1 text-[10px] text-slate-600 dark:border-slate-600 dark:text-slate-300"
+                              >
+                                {durationLabel}
+                              </Badge>
+                            ) : null}
                           </div>
 
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button type="button" onClick={() => handleStartConference(prompt)}>
+                          <div className="flex flex-wrap items-center gap-3 pt-1">
+                            <Button
+                              type="button"
+                              onClick={() => handleStartConference(prompt)}
+                              className="templates-primary-cta rounded-full px-5 py-2.5 text-xs font-bold uppercase tracking-[0.12em] hover:opacity-95"
+                            >
                               <Play className="mr-2 h-4 w-4" />
                               Start Conference
                             </Button>
@@ -808,6 +904,7 @@ const Templates = () => {
                               type="button"
                               variant="outline"
                               onClick={() => setPreviewPrompt(prompt)}
+                              className="rounded-full border-slate-200 px-5 py-2.5 text-xs font-semibold uppercase tracking-[0.1em] text-slate-700 hover:bg-slate-100 hover:text-slate-900 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-700"
                             >
                               <Eye className="mr-2 h-4 w-4" />
                               Preview
@@ -819,6 +916,7 @@ const Templates = () => {
                                   variant="ghost"
                                   size="icon"
                                   aria-label={`More actions for ${prompt.title}`}
+                                  className="rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-700 dark:hover:text-slate-100"
                                 >
                                   <MoreHorizontal className="h-4 w-4" />
                                 </Button>

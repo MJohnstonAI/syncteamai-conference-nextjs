@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
+import { Playfair_Display } from "next/font/google";
 import "./globals.css";
 import Providers from "./providers";
+
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  weight: ["400", "600", "700"],
+  variable: "--font-playfair",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "SyncTeamAI - Multi-Agent AI Conferences",
@@ -25,7 +33,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>
+      <body className={playfair.variable}>
         <Providers>{children}</Providers>
       </body>
     </html>

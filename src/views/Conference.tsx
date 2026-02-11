@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { ModelSelectionDropdown } from "@/components/ModelSelectionDropdown";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { RootPostCard } from "@/components/thread/RootPostCard";
@@ -14,7 +15,6 @@ import { ThreadEmptyState } from "@/components/thread/ThreadEmptyState";
 import { AgentMiniCard } from "@/components/thread/AgentMiniCard";
 import { RoundPill } from "@/components/thread/RoundPill";
 import { ActionRail } from "@/components/ActionRail";
-import { ConversationHistory } from "@/components/ConversationHistory";
 import { useAuth } from "@/hooks/useAuth";
 import { useCreateConversation } from "@/hooks/useConversations";
 import {
@@ -28,8 +28,21 @@ import { useUserRole } from "@/hooks/useUserRole";
 import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
 import { getAgentMeta } from "@/lib/agents";
+import {
+  buildConferencePhaseSystemPrompt,
+  getConferencePhaseForRoundNumber,
+  getConferencePhaseMeta,
+  type ConferenceAgentRole,
+  type ConferencePhase,
+} from "@/lib/conference/phases";
+import {
+  isPureRepetition,
+  normalizeAgentOutput,
+  parseDecisionBoardFromMessage,
+  type DecisionBoard,
+} from "@/lib/conference/quality";
 import type { ThreadSort } from "@/lib/thread/types";
-import { ArrowRight, Key, Loader2, Sparkles, Square } from "lucide-react";
+import { ArrowRight, CalendarDays, ChevronRight, Clock3, Key, Loader2, Sparkles, Square } from "lucide-react";
 
 type TranscriptMessage = {
   role: "user" | "assistant" | "system";
@@ -45,9 +58,23 @@ type AgentRunState = {
   error: string | null;
 };
 
+type PendingPhaseRun = {
+  userMessageId: string;
+  avatarIds: string[];
+  transcriptSeed: TranscriptMessage[];
+  phase: ConferencePhase;
+  roundNumber: number;
+};
+
+type QueuedHumanReply = {
+  parentMessageId: string | null;
+  content: string;
+};
+
 type NextStepState =
   | "session_booting"
   | "pending_run"
+  | "phase_checkpoint"
   | "partial_failure"
   | "no_byok"
   | "no_active_models"
@@ -84,12 +111,21 @@ const Conference = () => {
   const [agentRunStates, setAgentRunStates] = useState<Record<string, AgentRunState>>({});
   const [failedAgentIds, setFailedAgentIds] = useState<string[]>([]);
   const [activeRoundId, setActiveRoundId] = useState<string | null>(null);
+  const [activePhase, setActivePhase] = useState<ConferencePhase>("diverge");
+  const [activeRoundNumber, setActiveRoundNumber] = useState(1);
+  const [checkpointBetweenPhases, setCheckpointBetweenPhases] = useState(false);
+  const [pendingPhaseRun, setPendingPhaseRun] = useState<PendingPhaseRun | null>(null);
+  const [queuedHumanReplies, setQueuedHumanReplies] = useState<QueuedHumanReply[]>([]);
   const [modelSelectionOpenSignal, setModelSelectionOpenSignal] = useState(0);
 
   const hasCreatedConversation = useRef(false);
   const generationAbortRef = useRef<AbortController | null>(null);
   const roundTranscriptRef = useRef<TranscriptMessage[]>([]);
   const roundMessageIdRef = useRef<string | null>(null);
+  const roundCitationIdsRef = useRef<string[]>([]);
+  const queuedHumanRepliesRef = useRef<QueuedHumanReply[]>([]);
+  const activePhaseRef = useRef<ConferencePhase>("diverge");
+  const activeRoundNumberRef = useRef(1);
   const rootComposerRef = useRef<HTMLDivElement | null>(null);
 
   const title = searchParams.get("title") || "Conference";
@@ -194,6 +230,14 @@ const Conference = () => {
     setAgentRunStates({});
     setFailedAgentIds([]);
     setActiveRoundId(null);
+    setActivePhase("diverge");
+    setActiveRoundNumber(1);
+    setPendingPhaseRun(null);
+    setQueuedHumanReplies([]);
+    activePhaseRef.current = "diverge";
+    activeRoundNumberRef.current = 1;
+    roundCitationIdsRef.current = [];
+    queuedHumanRepliesRef.current = [];
     roundTranscriptRef.current = [];
     roundMessageIdRef.current = null;
   }, [conversationId]);
@@ -219,6 +263,70 @@ const Conference = () => {
       return Boolean(modelId && activeModels.includes(modelId));
     });
   }, [activeModels, avatarOrder, getModelForAvatar]);
+
+  const hasModelDiversity = useMemo(() => {
+    const modelIds = activeAvatarIds
+      .map((avatarId) => getModelForAvatar(avatarId))
+      .filter((value): value is string => Boolean(value));
+    return new Set(modelIds).size > 1;
+  }, [activeAvatarIds, getModelForAvatar]);
+
+  const resolveRunRoles = useCallback((avatarIds: string[]) => {
+    const roleMap: Record<string, ConferenceAgentRole> = {};
+    if (avatarIds.length === 0) return roleMap;
+
+    for (const avatarId of avatarIds) {
+      roleMap[avatarId] = "default";
+    }
+
+    const synthesizerId = avatarIds[avatarIds.length - 1];
+    roleMap[synthesizerId] = "synthesizer";
+
+    if (avatarIds.length > 1) {
+      const contrarianCandidate = avatarIds[0];
+      if (contrarianCandidate !== synthesizerId) {
+        roleMap[contrarianCandidate] = "contrarian";
+      }
+    }
+
+    return roleMap;
+  }, []);
+
+  const decisionBoard = useMemo<DecisionBoard | null>(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== "assistant") continue;
+      const parsed = parseDecisionBoardFromMessage(message.content);
+      if (!parsed) continue;
+      return {
+        ...parsed,
+        sourceMessageId: message.id,
+      };
+    }
+    return null;
+  }, [messages]);
+
+  const activeRoleMap = useMemo(
+    () => resolveRunRoles(activeAvatarIds),
+    [activeAvatarIds, resolveRunRoles]
+  );
+
+  const enqueueHumanReply = useCallback((entry: QueuedHumanReply) => {
+    setQueuedHumanReplies((previous) => {
+      const next = [...previous, entry];
+      queuedHumanRepliesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const dequeueHumanReply = useCallback(() => {
+    const queue = queuedHumanRepliesRef.current;
+    if (queue.length === 0) return null;
+    const [next, ...rest] = queue;
+    queuedHumanRepliesRef.current = rest;
+    setQueuedHumanReplies(rest);
+    return next;
+  }, []);
 
   useEffect(() => {
     if (!threadNodes.length) {
@@ -405,10 +513,16 @@ const Conference = () => {
       userMessageId,
       avatarIds,
       transcriptSeed,
+      phase,
+      roundNumber,
+      citationMessageIds,
     }: {
       userMessageId: string;
       avatarIds: string[];
       transcriptSeed: TranscriptMessage[];
+      phase: ConferencePhase;
+      roundNumber: number;
+      citationMessageIds: string[];
     }): Promise<{ failed: string[]; cancelled: boolean }> => {
       if (!conversationId) {
         return { failed: avatarIds, cancelled: false };
@@ -421,9 +535,11 @@ const Conference = () => {
       const transcript = [...transcriptSeed];
       const failed: string[] = [];
       let cancelled = false;
+      const runRoles = resolveRunRoles(avatarIds);
 
       try {
-        for (const avatarId of avatarIds) {
+        for (let avatarIndex = 0; avatarIndex < avatarIds.length; avatarIndex += 1) {
+          const avatarId = avatarIds[avatarIndex];
           if (abortController.signal.aborted) {
             cancelled = true;
             break;
@@ -450,12 +566,25 @@ const Conference = () => {
 
           try {
             const idempotencyKey = `${conversationId}:${userMessageId}:${avatarId}:${modelId}:${Date.now()}`;
+            const agentName = getAgentMeta(avatarId)?.name ?? avatarId;
+            const agentRole = runRoles[avatarId] ?? "default";
+            const phasePrompt = buildConferencePhaseSystemPrompt({
+              phase,
+              roundNumber,
+              agentName,
+              agentRole,
+              citationMessageIds,
+              fallbackReferenceId: userMessageId,
+            });
             const result = await streamAgentGeneration({
               conversationId,
               roundId: userMessageId,
               selectedAvatar: avatarId,
               modelId,
-              messages: transcript,
+              messages: [
+                { role: "system", content: phasePrompt },
+                ...transcript,
+              ],
               openRouterKey: openRouterKey ?? undefined,
               idempotencyKey,
               signal: abortController.signal,
@@ -472,22 +601,42 @@ const Conference = () => {
               throw new Error("Model returned an empty response.");
             }
 
+            const normalized = normalizeAgentOutput({
+              content: aiContent,
+              phase,
+              agentRole,
+              allowedReferenceIds: citationMessageIds,
+              fallbackReferenceId: userMessageId,
+            });
+
+            const priorAssistantMessages = transcript
+              .filter((item) => item.role === "assistant")
+              .map((item) => item.content);
+            if (
+              isPureRepetition({
+                candidate: normalized.content,
+                priorAssistantMessages,
+              })
+            ) {
+              throw new Error("Response repeated prior points without additive value.");
+            }
+
             await createReply.mutateAsync({
               conversationId,
               roundId: userMessageId,
               parentMessageId: userMessageId,
-              content: aiContent,
+              content: normalized.content,
               replyMode: "agent",
               avatarId,
               idempotencyKey: `${idempotencyKey}:persist`,
             });
 
-            transcript.push({ role: "assistant", content: aiContent });
+            transcript.push({ role: "assistant", content: normalized.content });
             roundTranscriptRef.current = transcript;
 
             setAgentState(avatarId, {
               status: "completed",
-              preview: aiContent.slice(0, 1000),
+              preview: normalized.content.slice(0, 1000),
               error: null,
             });
           } catch (error) {
@@ -511,6 +660,78 @@ const Conference = () => {
               status: "failed",
               error: errorMessage,
             });
+          }
+
+          const queuedReply = dequeueHumanReply();
+          if (queuedReply) {
+            try {
+              const queuedMessage = await createUserReply({
+                parentMessageId: queuedReply.parentMessageId,
+                content: queuedReply.content,
+              });
+
+              setSelectedMessageId(queuedMessage.id);
+              setReplyingToId(null);
+
+              const followupRoundNumber = activeRoundNumberRef.current + 1;
+              const followupPhase = getConferencePhaseForRoundNumber(followupRoundNumber);
+              setActivePhase(followupPhase);
+              setActiveRoundNumber(followupRoundNumber);
+              activePhaseRef.current = followupPhase;
+              activeRoundNumberRef.current = followupRoundNumber;
+
+              const followupTranscript = [
+                ...transcript,
+                { role: "user" as const, content: queuedMessage.content },
+              ];
+              roundTranscriptRef.current = followupTranscript;
+              roundMessageIdRef.current = queuedMessage.id;
+              setActiveRoundId(queuedMessage.id);
+              setFailedAgentIds([]);
+              setPendingPhaseRun(null);
+
+              const followupCitationIds = Array.from(
+                new Set([queuedMessage.id, ...roundCitationIdsRef.current])
+              ).slice(0, 8);
+              roundCitationIdsRef.current = followupCitationIds;
+
+              const remainingAvatarIds = avatarIds.slice(avatarIndex + 1);
+              const followupAvatarIds =
+                remainingAvatarIds.length > 0 ? remainingAvatarIds : avatarIds;
+              setAgentRunStates((previous) => {
+                const next = { ...previous };
+                for (const followupAvatarId of followupAvatarIds) {
+                  next[followupAvatarId] = {
+                    status: "queued",
+                    modelId: getModelForAvatar(followupAvatarId) ?? null,
+                    preview: "",
+                    error: null,
+                  };
+                }
+                return next;
+              });
+
+              const followupResult = await runAgentBatch({
+                userMessageId: queuedMessage.id,
+                avatarIds: followupAvatarIds,
+                transcriptSeed: followupTranscript,
+                phase: followupPhase,
+                roundNumber: followupRoundNumber,
+                citationMessageIds: followupCitationIds,
+              });
+              return {
+                failed: Array.from(new Set([...failed, ...followupResult.failed])),
+                cancelled: followupResult.cancelled,
+              };
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : "Failed to process queued human message.";
+              toast({
+                title: "Queue error",
+                description: message,
+                variant: "destructive",
+              });
+            }
           }
         }
 
@@ -541,9 +762,13 @@ const Conference = () => {
     [
       conversationId,
       createReply,
+      createUserReply,
+      dequeueHumanReply,
       getModelForAvatar,
       openRouterKey,
+      resolveRunRoles,
       setAgentState,
+      toast,
     ]
   );
 
@@ -564,6 +789,9 @@ const Conference = () => {
         userMessageId: roundMessageIdRef.current,
         avatarIds: [avatarId],
         transcriptSeed: transcript,
+        phase: activePhaseRef.current,
+        roundNumber: activeRoundNumberRef.current,
+        citationMessageIds: roundCitationIdsRef.current,
       });
 
       if (result.cancelled) {
@@ -595,6 +823,9 @@ const Conference = () => {
       userMessageId: roundMessageIdRef.current,
       avatarIds: failedAgentIds,
       transcriptSeed: transcript,
+      phase: activePhaseRef.current,
+      roundNumber: activeRoundNumberRef.current,
+      citationMessageIds: roundCitationIdsRef.current,
     });
     setFailedAgentIds(result.failed);
   }, [failedAgentIds, isAiThinking, runAgentBatch]);
@@ -610,7 +841,21 @@ const Conference = () => {
       clear: () => void;
     }) => {
       const trimmed = content.trim();
-      if (!trimmed || !conversationId || pendingParentId || isAiThinking) {
+      if (!trimmed || !conversationId || pendingParentId) {
+        return;
+      }
+
+      if (isAiThinking) {
+        enqueueHumanReply({
+          parentMessageId,
+          content: trimmed,
+        });
+        clear();
+        setReplyingToId(null);
+        toast({
+          title: "Queued",
+          description: "Your message is queued and will post after the current agent finishes.",
+        });
         return;
       }
 
@@ -623,6 +868,14 @@ const Conference = () => {
           parentMessageId,
           content: trimmed,
         });
+        const previousPhase = activePhaseRef.current;
+        const existingRoundCount = firstThreadPage?.rounds.length ?? 0;
+        const nextRoundNumber = existingRoundCount + 1;
+        const nextPhase = getConferencePhaseForRoundNumber(nextRoundNumber);
+        setActivePhase(nextPhase);
+        setActiveRoundNumber(nextRoundNumber);
+        activePhaseRef.current = nextPhase;
+        activeRoundNumberRef.current = nextRoundNumber;
 
         setSelectedMessageId(userMessage.id);
         setReplyingToId(null);
@@ -658,6 +911,11 @@ const Conference = () => {
         roundMessageIdRef.current = userMessage.id;
         setActiveRoundId(userMessage.id);
         setFailedAgentIds([]);
+        setPendingPhaseRun(null);
+
+        const recentThreadIds = threadNodes.slice(-8).map((node) => node.id);
+        const citationMessageIds = Array.from(new Set([userMessage.id, ...recentThreadIds])).slice(0, 8);
+        roundCitationIdsRef.current = citationMessageIds;
 
         const initialStates: Record<string, AgentRunState> = {};
         for (const avatarId of activeAvatarIds) {
@@ -670,10 +928,30 @@ const Conference = () => {
         }
         setAgentRunStates(initialStates);
 
+        const phaseTransition =
+          existingRoundCount > 0 && nextPhase !== previousPhase;
+        if (checkpointBetweenPhases && phaseTransition) {
+          setPendingPhaseRun({
+            userMessageId: userMessage.id,
+            avatarIds: activeAvatarIds,
+            transcriptSeed: transcript,
+            phase: nextPhase,
+            roundNumber: nextRoundNumber,
+          });
+          toast({
+            title: "Phase checkpoint",
+            description: `Round ${nextRoundNumber} is ready (${getConferencePhaseMeta(nextPhase).label}). Review and continue when ready.`,
+          });
+          return;
+        }
+
         const result = await runAgentBatch({
           userMessageId: userMessage.id,
           avatarIds: activeAvatarIds,
           transcriptSeed: transcript,
+          phase: nextPhase,
+          roundNumber: nextRoundNumber,
+          citationMessageIds,
         });
         setFailedAgentIds(result.failed);
         if (result.cancelled) {
@@ -702,35 +980,61 @@ const Conference = () => {
     [
       activeAvatarIds,
       buildTranscriptFromMessages,
+      checkpointBetweenPhases,
       conversationId,
       createUserReply,
+      enqueueHumanReply,
       getModelForAvatar,
       hasConfiguredOpenRouterKey,
       hasPrivilegedAccess,
+      firstThreadPage?.rounds.length,
       isAiThinking,
       messages,
       pendingParentId,
       runAgentBatch,
+      threadNodes,
       toast,
     ]
   );
 
-  const handleSelectConversation = useCallback(
-    (nextConversationId: string) => {
-      setConversationId(nextConversationId);
-      setSelectedMessageId(null);
-      navigate(`/conference?conversation_id=${nextConversationId}`, {
-        replace: true,
-      });
-    },
-    [navigate]
-  );
+  const continuePendingPhaseRun = useCallback(async () => {
+    if (!pendingPhaseRun || isAiThinking) return;
 
-  const handleNewConversation = useCallback(() => {
-    setConversationId(null);
-    setSelectedMessageId(null);
-    navigate("/conference");
-  }, [navigate]);
+    setPendingPhaseRun(null);
+    const result = await runAgentBatch({
+      ...pendingPhaseRun,
+      citationMessageIds: roundCitationIdsRef.current,
+    });
+    setFailedAgentIds(result.failed);
+    if (result.cancelled) {
+      toast({
+        title: "Generation cancelled",
+        description: "The round was cancelled before all agents completed.",
+      });
+    } else if (result.failed.length > 0) {
+      toast({
+        title: "Partial round failure",
+        description: `${result.failed.length} agent response(s) failed. Use retry to recover.`,
+        variant: "destructive",
+      });
+    }
+  }, [isAiThinking, pendingPhaseRun, runAgentBatch, toast]);
+
+  const handleOpenSessionVault = useCallback(() => {
+    const params = new URLSearchParams();
+    if (conversationId) {
+      params.set("conversation_id", conversationId);
+    }
+    const target = params.toString() ? `/sessions?${params.toString()}` : "/sessions";
+    navigate(target);
+  }, [conversationId, navigate]);
+
+  const handleEndConference = useCallback(() => {
+    if (isAiThinking) {
+      cancelAgentGeneration();
+    }
+    navigate("/templates");
+  }, [cancelAgentGeneration, isAiThinking, navigate]);
 
   const conferenceReturnPath = useMemo(() => {
     const query = searchParams.toString();
@@ -765,6 +1069,7 @@ const Conference = () => {
   const nextStepState = useMemo<NextStepState>(() => {
     if (!conversationId) return "session_booting";
     if (isAiThinking || pendingParentId !== null) return "pending_run";
+    if (pendingPhaseRun) return "phase_checkpoint";
     if (failedAgentIds.length > 0) return "partial_failure";
     if (!hasPrivilegedAccess || !hasConfiguredOpenRouterKey) return "no_byok";
     if (activeAvatarIds.length === 0) return "no_active_models";
@@ -776,6 +1081,7 @@ const Conference = () => {
     hasConfiguredOpenRouterKey,
     hasPrivilegedAccess,
     isAiThinking,
+    pendingPhaseRun,
     pendingParentId,
   ]);
 
@@ -797,11 +1103,26 @@ const Conference = () => {
           badgeLabel: "In Progress",
           title: isAiThinking ? "Agents are running this round" : "Posting your message",
           description: isAiThinking
-            ? "Wait for completion or stop now if you need to change direction."
+            ? queuedHumanReplies.length > 0
+              ? `${queuedHumanReplies.length} human message(s) queued to post after the current agent finishes.`
+              : "Wait for completion or stop now if you need to change direction."
             : "Your prompt is being posted to the thread.",
-          actionLabel: isAiThinking ? "Stop run" : "Sending...",
+          actionLabel: isAiThinking ? "Pause run" : "Sending...",
           actionVariant: "outline" as const,
           actionDisabled: !isAiThinking,
+        };
+      case "phase_checkpoint":
+        return {
+          badgeVariant: "outline" as const,
+          badgeLabel: "Checkpoint",
+          title: "Phase checkpoint is ready",
+          description:
+            pendingPhaseRun
+              ? `Round ${pendingPhaseRun.roundNumber} is queued for ${getConferencePhaseMeta(pendingPhaseRun.phase).label}.`
+              : "The next phase is waiting for your confirmation.",
+          actionLabel: "Start next phase",
+          actionVariant: "default" as const,
+          actionDisabled: !pendingPhaseRun,
         };
       case "partial_failure":
         return {
@@ -850,7 +1171,15 @@ const Conference = () => {
           actionDisabled: false,
         };
     }
-  }, [failedAgentIds.length, hasPrivilegedAccess, isAiThinking, nextStepState, threadNodes.length]);
+  }, [
+    failedAgentIds.length,
+    hasPrivilegedAccess,
+    isAiThinking,
+    nextStepState,
+    pendingPhaseRun,
+    queuedHumanReplies.length,
+    threadNodes.length,
+  ]);
 
   const handleNextStepPrimaryAction = useCallback(() => {
     switch (nextStepState) {
@@ -858,6 +1187,9 @@ const Conference = () => {
         if (isAiThinking) {
           cancelAgentGeneration();
         }
+        return;
+      case "phase_checkpoint":
+        void continuePendingPhaseRun();
         return;
       case "partial_failure":
         void retryAllFailedAgents();
@@ -881,6 +1213,7 @@ const Conference = () => {
     }
   }, [
     cancelAgentGeneration,
+    continuePendingPhaseRun,
     focusRootComposer,
     hasPrivilegedAccess,
     isAiThinking,
@@ -891,41 +1224,90 @@ const Conference = () => {
     retryAllFailedAgents,
   ]);
 
+  const currentRoundCount = firstThreadPage?.rounds.length ?? 0;
+  const nextRoundNumber = currentRoundCount + 1;
+  const hasActiveRoundContext =
+    isAiThinking || pendingParentId !== null || failedAgentIds.length > 0 || pendingPhaseRun !== null;
+  const displayPhase = hasActiveRoundContext
+    ? activePhase
+    : getConferencePhaseForRoundNumber(nextRoundNumber);
+  const displayRoundNumber = hasActiveRoundContext
+    ? activeRoundNumber
+    : nextRoundNumber;
+  const displayPhaseMeta = getConferencePhaseMeta(displayPhase);
+
+  const conferenceTitle = firstThreadPage?.rootPost.title ?? title;
+  const conferenceDateParts = useMemo(() => {
+    const sourceTimestamp = firstThreadPage?.rootPost.createdAt ?? messages[0]?.created_at ?? null;
+    if (!sourceTimestamp) {
+      return { date: "--", time: "--" };
+    }
+
+    const parsed = new Date(sourceTimestamp);
+    if (Number.isNaN(parsed.getTime())) {
+      return { date: "--", time: "--" };
+    }
+
+    return {
+      date: parsed.toLocaleDateString(),
+      time: parsed.toLocaleTimeString(),
+    };
+  }, [firstThreadPage?.rootPost.createdAt, messages]);
+
+  const editorialPanelClass =
+    "rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_8px_28px_-18px_rgba(15,23,42,0.28)] dark:border-slate-700/80 dark:bg-[#141a26]";
+
   const priorityCard = (
-    <section className="mx-auto w-full max-w-4xl rounded-lg border bg-card p-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">What Next</p>
-            <Badge variant={nextStepMeta.badgeVariant}>{nextStepMeta.badgeLabel}</Badge>
+    <section className="mx-auto w-full max-w-5xl rounded-[1.35rem] bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-[2px] shadow-[0_20px_45px_-24px_rgba(79,70,229,0.8)]">
+      <div className="rounded-[1.2rem] bg-white px-5 py-4 dark:bg-[#141a26] sm:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">
+                {hasPrivilegedAccess ? "Conference Flow" : "Access Required"}
+              </p>
+              <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em]">
+                Phase {displayPhaseMeta.label}
+              </Badge>
+              <Badge variant={nextStepMeta.badgeVariant} className="text-[10px] uppercase tracking-[0.12em]">
+                {nextStepMeta.badgeLabel}
+              </Badge>
+            </div>
+            <h2 className="font-[var(--font-playfair)] text-2xl font-bold leading-tight text-slate-900 dark:text-slate-100">
+              {nextStepMeta.title}
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-300">{nextStepMeta.description}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-300">
+              Round {displayRoundNumber}: {displayPhaseMeta.shortDescription}
+            </p>
           </div>
-          <h2 className="text-sm font-semibold">{nextStepMeta.title}</h2>
-          <p className="text-xs text-muted-foreground">{nextStepMeta.description}</p>
+          <Button
+            type="button"
+            size="sm"
+            variant={nextStepMeta.actionVariant}
+            onClick={handleNextStepPrimaryAction}
+            disabled={nextStepMeta.actionDisabled}
+            className="h-11 min-w-44 rounded-xl px-5 text-sm font-semibold"
+          >
+            {nextStepMeta.actionLabel}
+            <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant={nextStepMeta.actionVariant}
-          onClick={handleNextStepPrimaryAction}
-          disabled={nextStepMeta.actionDisabled}
-          className="sm:min-w-44"
-        >
-          {nextStepMeta.actionLabel}
-          <ArrowRight className="ml-2 h-4 w-4" />
-        </Button>
       </div>
     </section>
   );
 
   const leftSidebar = (
-    <div className="space-y-4">
-      <section className="rounded-lg border bg-card p-3">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">Conference</p>
-        <h2 className="mt-1 text-lg font-semibold leading-tight">
-          {firstThreadPage?.rootPost.title ?? title}
-        </h2>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Badge variant="outline">{effectiveRole}</Badge>
+    <div className="space-y-4 pb-4">
+      <section className={editorialPanelClass}>
+        <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Conference</p>
+        <p className="mt-2 text-sm text-slate-500 dark:text-slate-300">
+          End this session and pick a template for the next conference.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="border-amber-300 bg-amber-50 capitalize text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            {effectiveRole}
+          </Badge>
           {hasConfiguredOpenRouterKey ? (
             <Badge variant="secondary" className="gap-1">
               <Key className="h-3 w-3" /> BYOK
@@ -936,75 +1318,132 @@ const Conference = () => {
           type="button"
           variant="outline"
           size="sm"
-          className="mt-3 w-full"
-          onClick={handleNewConversation}
+          className="mt-4 h-10 w-full rounded-xl border-slate-200 bg-white text-sm font-medium dark:border-slate-600 dark:bg-[#1f2736]"
+          onClick={handleEndConference}
         >
-          New Conference
+          End Conference
         </Button>
       </section>
 
-      <section className="space-y-2 rounded-lg border bg-card p-3">
-        <h3 className="text-sm font-semibold">Session Vault</h3>
-        <ConversationHistory
-          embedded
-          hideNewButton
-          limit={25}
-          currentConversationId={conversationId}
-          onSelectConversation={handleSelectConversation}
-          onNewConversation={handleNewConversation}
-          className="max-h-[280px]"
-        />
+      <section className={editorialPanelClass}>
+        <h3 className="font-[var(--font-playfair)] text-2xl font-semibold text-slate-900 dark:text-slate-100">
+          Session Vault
+        </h3>
+        <p className="mt-2 text-sm text-slate-500 dark:text-slate-300">
+          Open the full vault to browse every saved session with search and pagination.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-4 h-10 w-full rounded-xl border-slate-200 bg-white text-sm font-medium dark:border-slate-600 dark:bg-[#1f2736]"
+          onClick={handleOpenSessionVault}
+        >
+          Open Session Vault
+        </Button>
       </section>
 
-      <section className="space-y-2 rounded-lg border bg-card p-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Sort & Filters</h3>
+      <section className={editorialPanelClass}>
+        <h3 className="font-[var(--font-playfair)] text-xl font-semibold text-slate-900 dark:text-slate-100">
+          Sort & Filters
+        </h3>
+        <div className="mt-3">
+          <SortFilterBar
+            sort={sortMode}
+            onSortChange={setSortMode}
+            roundFilter={roundFilter}
+            onRoundFilterChange={setRoundFilter}
+            agentFilter={agentFilter}
+            onAgentFilterChange={setAgentFilter}
+            rounds={firstThreadPage?.rounds ?? []}
+            agents={firstThreadPage?.agents ?? []}
+          />
         </div>
-        <SortFilterBar
-          sort={sortMode}
-          onSortChange={setSortMode}
-          roundFilter={roundFilter}
-          onRoundFilterChange={setRoundFilter}
-          agentFilter={agentFilter}
-          onAgentFilterChange={setAgentFilter}
-          rounds={firstThreadPage?.rounds ?? []}
-          agents={firstThreadPage?.agents ?? []}
-        />
       </section>
 
-      <section className="space-y-2 rounded-lg border bg-card p-3">
-        <h3 className="text-sm font-semibold">Agents in Order</h3>
+      <section className={editorialPanelClass}>
+        <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+          Inquiry Phase
+        </h3>
+        <p className="mt-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+          Round {displayRoundNumber}: {displayPhaseMeta.label}
+        </p>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
+          {displayPhaseMeta.shortDescription}
+        </p>
+        <div className="mt-3 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-[#1b2331]">
+          <div className="pr-3">
+            <p className="text-xs font-medium text-slate-700 dark:text-slate-200">Checkpoint Between Phases</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-300">
+              Pause at phase transitions before agents continue.
+            </p>
+          </div>
+          <Switch
+            checked={checkpointBetweenPhases}
+            onCheckedChange={setCheckpointBetweenPhases}
+            aria-label="Toggle phase checkpoint"
+          />
+        </div>
+        {pendingPhaseRun ? (
+          <p className="mt-2 text-[11px] text-indigo-600 dark:text-indigo-300">
+            Checkpoint pending: Round {pendingPhaseRun.roundNumber} ({getConferencePhaseMeta(pendingPhaseRun.phase).label})
+          </p>
+        ) : null}
+      </section>
+
+      <section className={editorialPanelClass}>
+        <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Active Agents</h3>
         {activeAvatarIds.length === 0 ? (
-          <p className="text-xs text-muted-foreground">Activate at least one model to receive agent replies.</p>
+          <p className="mt-3 text-xs text-slate-500 dark:text-slate-300">
+            Activate at least one model to receive agent replies.
+          </p>
         ) : (
-          <div className="space-y-2">
+          <div className="mt-3 space-y-3">
+            {!hasModelDiversity ? (
+              <p className="rounded-lg border border-amber-300/70 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+                All active agents are currently mapped to the same model. Add at least one different model for better disagreement quality.
+              </p>
+            ) : null}
             {activeAvatarIds.map((avatarId, index) => {
               const modelId = getModelForAvatar(avatarId);
               const agent = getAgentMeta(avatarId);
+              const roleMode = activeRoleMap[avatarId] ?? "default";
+              const roleLabel =
+                roleMode === "contrarian"
+                  ? "Contrarian"
+                  : roleMode === "synthesizer"
+                  ? "Synthesizer"
+                  : "Contributor";
               const state = agentRunStates[avatarId];
               const statusLabel = state?.status ? state.status.replace("_", " ") : "idle";
               const statusClass =
                 state?.status === "completed"
-                  ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20"
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
                   : state?.status === "failed"
-                  ? "bg-destructive/10 text-destructive border-destructive/20"
+                  ? "border-destructive/20 bg-destructive/10 text-destructive"
                   : state?.status === "generating"
-                  ? "bg-primary/10 text-primary border-primary/20"
+                  ? "border-primary/20 bg-primary/10 text-primary"
                   : state?.status === "cancelled"
-                  ? "bg-muted text-muted-foreground border-border"
-                  : "bg-muted text-muted-foreground border-border";
+                  ? "border-border bg-muted text-muted-foreground"
+                  : "border-border bg-muted text-muted-foreground";
               return (
-                <div key={avatarId} className="rounded-lg border bg-background p-2">
+                <div
+                  key={avatarId}
+                  className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5 dark:border-slate-700 dark:bg-[#1b2331]"
+                >
                   <div className="mb-2 flex items-center justify-between">
                     <Badge variant="outline">#{index + 1}</Badge>
-                    <Badge variant="outline" className={statusClass}>
-                      {statusLabel}
-                    </Badge>
+                    <div className="flex items-center gap-1">
+                      <Badge variant="outline">{roleLabel}</Badge>
+                      <Badge variant="outline" className={statusClass}>
+                        {statusLabel}
+                      </Badge>
+                    </div>
                   </div>
                   <AgentMiniCard agentId={agent?.id ?? avatarId} />
-                  <p className="mt-2 truncate text-xs text-muted-foreground">{modelId ?? "No model"}</p>
+                  <p className="mt-2 truncate text-xs text-slate-500 dark:text-slate-300">{modelId ?? "No model"}</p>
                   {state?.preview ? (
-                    <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">{state.preview}</p>
+                    <p className="mt-1 line-clamp-3 text-xs text-slate-500 dark:text-slate-300">{state.preview}</p>
                   ) : null}
                   {state?.error ? (
                     <p className="mt-1 text-xs text-destructive">{state.error}</p>
@@ -1014,7 +1453,7 @@ const Conference = () => {
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="mt-2 h-7 text-xs"
+                      className="mt-2 h-7 rounded-lg text-xs"
                       onClick={() => {
                         void retryFailedAgent(avatarId);
                       }}
@@ -1031,16 +1470,16 @@ const Conference = () => {
       </section>
 
       {failedAgentIds.length > 0 ? (
-        <section className="space-y-2 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+        <section className="rounded-2xl border border-destructive/40 bg-destructive/5 p-4">
           <h3 className="text-sm font-semibold text-destructive">Recovery</h3>
-          <p className="text-xs text-muted-foreground">
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-300">
             {failedAgentIds.length} agent response(s) failed for this round.
           </p>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="w-full"
+            className="mt-3 w-full rounded-lg"
             onClick={() => {
               void retryAllFailedAgents();
             }}
@@ -1051,19 +1490,21 @@ const Conference = () => {
         </section>
       ) : null}
 
-      <section className="space-y-2 rounded-lg border bg-card p-3">
-        <h3 className="text-sm font-semibold">Round Timeline</h3>
-        <div className="space-y-1">
+      <section className={editorialPanelClass}>
+        <h3 className="font-[var(--font-playfair)] text-lg font-semibold text-slate-900 dark:text-slate-100">
+          Round Timeline
+        </h3>
+        <div className="mt-3 space-y-2">
           {firstThreadPage?.rounds?.length ? (
             firstThreadPage.rounds.map((round) => (
               <button
                 key={round.id}
                 type="button"
                 onClick={() => setRoundFilter(round.id)}
-                className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition-colors ${
+                className={`w-full rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
                   roundFilter === round.id
-                    ? "border-primary bg-primary/10"
-                    : "border-border bg-background hover:bg-muted"
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-[#1d2534] dark:text-slate-300 dark:hover:bg-[#232d3f]"
                 }`}
               >
                 <div className="flex items-center justify-between">
@@ -1073,14 +1514,14 @@ const Conference = () => {
               </button>
             ))
           ) : (
-            <p className="text-xs text-muted-foreground">No rounds yet.</p>
+            <p className="text-xs text-slate-500 dark:text-slate-300">No rounds yet.</p>
           )}
           {roundFilter !== "all" ? (
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="mt-1 w-full"
+              className="w-full rounded-lg text-xs"
               onClick={() => setRoundFilter("all")}
             >
               Clear Round Filter
@@ -1089,30 +1530,39 @@ const Conference = () => {
         </div>
       </section>
 
-      <section className="space-y-2 rounded-lg border bg-card p-3">
-        {hasPrivilegedAccess ? (
+      {hasPrivilegedAccess ? (
+        <section className={editorialPanelClass}>
           <Button
             variant="outline"
             size="sm"
-            className="w-full"
+            className="w-full rounded-xl border-slate-200 bg-white dark:border-slate-600 dark:bg-[#1f2736]"
             onClick={() => navigateToSettingsForByok("sidebar")}
           >
             <Key className="mr-2 h-4 w-4" />
             {hasConfiguredOpenRouterKey ? "Manage BYOK" : "Enable BYOK"}
           </Button>
-        ) : null}
-      </section>
+        </section>
+      ) : null}
     </div>
   );
 
   const centerColumn = (
-    <div className="flex h-full flex-col">
-      <header className="border-b bg-background/80 px-4 py-3 backdrop-blur">
+    <div className="flex h-full flex-col bg-[#f3f4f6] dark:bg-[#0f1118]">
+      <header className="border-b border-slate-200/90 bg-white/80 px-5 py-3 backdrop-blur-md dark:border-slate-700 dark:bg-[#141a26]/80">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold">{firstThreadPage?.rootPost.title ?? title}</h1>
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
-            <Sparkles className="h-4 w-4" />
-            <span>{activeAvatarIds.length} active agents</span>
+          <div className="flex min-w-0 items-center gap-2 text-sm text-slate-500 dark:text-slate-300">
+            <span>Conference</span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+            <span className="truncate font-medium text-slate-900 dark:text-slate-100">{conferenceTitle}</span>
+          </div>
+          <div className="flex items-center gap-3 text-sm text-slate-500 dark:text-slate-300">
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+              Phase {displayPhaseMeta.label}
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-1 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
+              <Sparkles className="h-4 w-4" />
+              {activeAvatarIds.length} active agents
+            </span>
             {isAiThinking ? (
               <>
                 <span className="inline-flex items-center gap-1 text-primary">
@@ -1123,24 +1573,25 @@ const Conference = () => {
                   size="sm"
                   variant="outline"
                   onClick={cancelAgentGeneration}
-                >
-                  <Square className="mr-2 h-3.5 w-3.5" />
-                  Cancel
-                </Button>
-              </>
-            ) : null}
+                  className="rounded-lg"
+                  >
+                    <Square className="mr-2 h-3.5 w-3.5" />
+                    Pause
+                  </Button>
+                </>
+              ) : null}
           </div>
         </div>
       </header>
 
       {!hasConfiguredOpenRouterKey && hasPrivilegedAccess ? (
-        <div className="px-4 pt-3">
-          <Alert>
+        <div className="px-5 pt-4">
+          <Alert className="border border-indigo-500/30 bg-indigo-50/70 dark:border-indigo-500/40 dark:bg-indigo-500/10">
             <Key className="h-4 w-4" />
             <AlertTitle>BYOK Needed for Agent Replies</AlertTitle>
-            <AlertDescription className="flex items-center justify-between gap-3">
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
               <span>Add your OpenRouter key to continue multi-agent generation.</span>
-              <Button size="sm" onClick={() => navigateToSettingsForByok("alert")}>
+              <Button size="sm" onClick={() => navigateToSettingsForByok("alert")} className="rounded-lg">
                 Configure
               </Button>
             </AlertDescription>
@@ -1148,8 +1599,24 @@ const Conference = () => {
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <div className="mx-auto w-full max-w-4xl space-y-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        <div className="mx-auto w-full max-w-5xl space-y-5">
+          <section className="border-b border-slate-200 pb-6 dark:border-slate-700">
+            <h1 className="font-[var(--font-playfair)] text-4xl font-bold leading-tight text-slate-900 dark:text-slate-100 md:text-6xl">
+              {conferenceTitle}
+            </h1>
+            <div className="mt-3 flex flex-wrap items-center gap-5 text-sm text-slate-500 dark:text-slate-300">
+              <span className="inline-flex items-center gap-1.5">
+                <CalendarDays className="h-4 w-4" />
+                {conferenceDateParts.date}
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Clock3 className="h-4 w-4" />
+                {conferenceDateParts.time}
+              </span>
+            </div>
+          </section>
+
           <RootPostCard
             post={
               firstThreadPage?.rootPost ?? {
@@ -1166,7 +1633,7 @@ const Conference = () => {
           {threadLoading ? (
             <ThreadSkeleton />
           ) : threadError ? (
-            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+            <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
               {(threadError as Error).message || "Unable to load thread."}
             </div>
           ) : threadNodes.length === 0 ? (
@@ -1237,6 +1704,7 @@ const Conference = () => {
               <Button
                 type="button"
                 variant="outline"
+                className="rounded-xl"
                 onClick={() => {
                   void fetchNextPage();
                 }}
@@ -1256,8 +1724,8 @@ const Conference = () => {
         </div>
       </div>
 
-      <div className="border-t bg-background/90 px-4 py-3 backdrop-blur">
-        <div className="mx-auto w-full max-w-4xl space-y-3">
+      <div className="border-t border-slate-200/80 bg-white/90 px-5 py-4 backdrop-blur-lg dark:border-slate-700 dark:bg-[#141a26]/90">
+        <div className="mx-auto w-full max-w-5xl space-y-3">
           <ModelSelectionDropdown
             selectedModels={selectedModels}
             onSelectionChange={setSelectedModels}
@@ -1265,6 +1733,11 @@ const Conference = () => {
             openSignal={modelSelectionOpenSignal}
             emphasize={nextStepState === "no_active_models"}
           />
+          {queuedHumanReplies.length > 0 ? (
+            <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-300">
+              {queuedHumanReplies.length} human message(s) queued. They will post immediately after the current agent reply completes.
+            </div>
+          ) : null}
           <div ref={rootComposerRef}>
             <ThreadComposer
               value={rootDraft}
@@ -1288,15 +1761,56 @@ const Conference = () => {
 
   const rightSidebar = (
     <div className="space-y-4">
-      <section className="rounded-lg border bg-card p-3">
-        <h3 className="text-sm font-semibold">Selected Message</h3>
+      <section className={editorialPanelClass}>
+        <h3 className="font-[var(--font-playfair)] text-xl font-semibold text-slate-900 dark:text-slate-100">
+          Decision Board
+        </h3>
+        {!decisionBoard ? (
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-300">
+            The synthesizer will publish Decision Board updates with claim, trade-offs, confidence, and next action.
+          </p>
+        ) : (
+          <div className="mt-3 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+            <p><span className="font-semibold text-slate-900 dark:text-slate-100">Claim:</span> {decisionBoard.claim}</p>
+            <p><span className="font-semibold text-slate-900 dark:text-slate-100">For:</span> {decisionBoard.forCase}</p>
+            <p><span className="font-semibold text-slate-900 dark:text-slate-100">Against:</span> {decisionBoard.againstCase}</p>
+            <p><span className="font-semibold text-slate-900 dark:text-slate-100">Confidence:</span> {decisionBoard.confidence}</p>
+            <p><span className="font-semibold text-slate-900 dark:text-slate-100">Next Action:</span> {decisionBoard.nextAction}</p>
+            {decisionBoard.sourceMessageId ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-1 rounded-lg"
+                onClick={() => {
+                  setSelectedMessageId(decisionBoard.sourceMessageId ?? null);
+                  setLinkTargetId(decisionBoard.sourceMessageId ?? null);
+                  document.getElementById(`message-${decisionBoard.sourceMessageId}`)?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "center",
+                  });
+                }}
+              >
+                Open source message
+              </Button>
+            ) : null}
+          </div>
+        )}
+      </section>
+
+      <section className={editorialPanelClass}>
+        <h3 className="font-[var(--font-playfair)] text-xl font-semibold text-slate-900 dark:text-slate-100">
+          Selected Message
+        </h3>
         {!selectedMessage ? (
-          <p className="mt-2 text-xs text-muted-foreground">Select a message to inspect context and quick actions.</p>
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-300">
+            Select a message to inspect context and quick actions.
+          </p>
         ) : (
           <div className="mt-3 space-y-3">
             <AgentMiniCard agentId={selectedMessage.avatarId} />
 
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-300">
               {selectedMessage.roundId ? (
                 <RoundPill
                   label={roundLabelById[selectedMessage.roundId] ?? "Round"}
@@ -1311,6 +1825,7 @@ const Conference = () => {
                 type="button"
                 variant="outline"
                 size="sm"
+                className="rounded-lg"
                 onClick={() => {
                   if (!selectedMessage) return;
                   void copyMessageLink(selectedMessage.id);
@@ -1322,6 +1837,7 @@ const Conference = () => {
                 type="button"
                 variant="outline"
                 size="sm"
+                className="rounded-lg"
                 onClick={() => {
                   if (!selectedMessage) return;
                   handleToggleCollapse(selectedMessage.id);
@@ -1333,6 +1849,7 @@ const Conference = () => {
               <Button
                 type="button"
                 size="sm"
+                className="rounded-lg"
                 variant={selectedMessage.isHighlight ? "secondary" : "outline"}
                 onClick={() => {
                   if (!selectedMessage || !conversationId) return;
@@ -1360,7 +1877,7 @@ const Conference = () => {
               </Button>
             </div>
 
-            <div className="rounded-md border bg-background p-2 text-sm text-muted-foreground">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-[#1b2331] dark:text-slate-300">
               <p className="line-clamp-8 whitespace-pre-wrap">{selectedMessage.content}</p>
             </div>
           </div>
@@ -1374,13 +1891,13 @@ const Conference = () => {
   }
 
   return (
-    <>
+    <div data-conference-page>
       <ThreadShell
         iconRail={
           <ActionRail
             conversationId={conversationId ?? undefined}
             messages={messages}
-            conversationTitle={firstThreadPage?.rootPost.title ?? title}
+            conversationTitle={conferenceTitle}
           />
         }
         priorityCard={priorityCard}
@@ -1388,7 +1905,7 @@ const Conference = () => {
         centerColumn={centerColumn}
         rightSidebar={rightSidebar}
       />
-    </>
+    </div>
   );
 };
 

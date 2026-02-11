@@ -12,6 +12,13 @@ export interface Conversation {
   updated_at: string;
 }
 
+export interface ConversationsPageResult {
+  conversations: Conversation[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+}
+
 export const useConversations = (limit: number = 50) => {
   const { user } = useAuth();
 
@@ -29,6 +36,52 @@ export const useConversations = (limit: number = 50) => {
     },
     enabled: !!user,
     staleTime: 60000, // Cache for 1 minute to reduce DB load
+  });
+};
+
+export const useConversationsPage = ({
+  page = 1,
+  pageSize = 12,
+  searchQuery = "",
+}: {
+  page?: number;
+  pageSize?: number;
+  searchQuery?: string;
+}) => {
+  const { user } = useAuth();
+
+  const safePage = Math.max(1, page);
+  const safePageSize = Math.max(1, pageSize);
+  const normalizedSearch = searchQuery.trim();
+
+  return useQuery({
+    queryKey: ["conversations-page", user?.id, safePage, safePageSize, normalizedSearch],
+    queryFn: async () => {
+      const from = (safePage - 1) * safePageSize;
+      const to = from + safePageSize - 1;
+
+      let query = supabase
+        .from("conversations")
+        .select("*", { count: "exact" })
+        .order("updated_at", { ascending: false })
+        .range(from, to);
+
+      if (normalizedSearch) {
+        query = query.ilike("title", `%${normalizedSearch}%`);
+      }
+
+      const { data, error, count } = await query;
+      if (error) throw error;
+
+      return {
+        conversations: (data ?? []) as Conversation[],
+        totalCount: count ?? 0,
+        page: safePage,
+        pageSize: safePageSize,
+      } as ConversationsPageResult;
+    },
+    enabled: !!user,
+    staleTime: 60000,
   });
 };
 
@@ -85,6 +138,7 @@ export const useCreateConversation = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations-page"] });
     },
   });
 };
@@ -103,6 +157,7 @@ export const useDeleteConversation = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      queryClient.invalidateQueries({ queryKey: ["conversations-page"] });
     },
   });
 };

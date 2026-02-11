@@ -217,6 +217,77 @@
     inset 0 0 0 1px rgb(255 255 255 / 0.25);
 }
 
+/* Session Vault page aligns with Conference + Templates palette. */
+[data-sessions-page] {
+  --sv-bg: #f3f6ff;
+  --sv-surface: #ffffff;
+  --sv-border: #d7e0f3;
+  --sv-text: #0f172a;
+  --sv-muted: #64748b;
+  --sv-brand: #4f46e5;
+  --sv-brand-2: #2563eb;
+  --sv-brand-3: #7c3aed;
+  background:
+    radial-gradient(130% 120% at 0% 0%, color-mix(in srgb, var(--sv-brand) 12%, transparent), transparent 52%),
+    radial-gradient(110% 120% at 100% 0%, color-mix(in srgb, var(--sv-brand-3) 10%, transparent), transparent 48%),
+    var(--sv-bg);
+}
+
+[data-sessions-page].dark,
+.dark [data-sessions-page] {
+  --sv-bg: #070d1c;
+  --sv-surface: #111a2b;
+  --sv-border: #2a3850;
+  --sv-text: #e2e8f0;
+  --sv-muted: #94a3b8;
+}
+
+[data-sessions-page] .sessions-shell {
+  background: transparent;
+}
+
+[data-sessions-page] .sessions-panel {
+  background: var(--sv-surface);
+  border: 1px solid var(--sv-border);
+  box-shadow:
+    0 6px 16px -8px rgb(15 23 42 / 0.2),
+    0 2px 8px -4px rgb(15 23 42 / 0.14),
+    inset 0 0 0 1px rgb(255 255 255 / 0.3);
+}
+
+[data-sessions-page].dark .sessions-panel,
+.dark [data-sessions-page] .sessions-panel {
+  box-shadow:
+    0 8px 20px -10px rgb(0 0 0 / 0.5),
+    0 4px 10px -6px rgb(0 0 0 / 0.4),
+    inset 0 0 0 1px rgb(255 255 255 / 0.03);
+}
+
+[data-sessions-page] .sessions-kicker {
+  font-size: 0.65rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sv-brand);
+  font-weight: 700;
+}
+
+[data-sessions-page] .sessions-micro-badge {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+[data-sessions-page] .sessions-text-muted {
+  color: var(--sv-muted);
+}
+
+[data-sessions-page] .sessions-primary-cta {
+  background: linear-gradient(95deg, var(--sv-brand-2) 0%, var(--sv-brand) 52%, var(--sv-brand-3) 100%);
+  color: #ffffff;
+  box-shadow: 0 0 24px -10px color-mix(in srgb, var(--sv-brand) 85%, transparent);
+}
+
 @layer base {
   * {
     @apply border-border;

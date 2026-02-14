@@ -36,6 +36,7 @@ export function ThreadList({
   onCopyLink,
   onToggleHighlight,
   renderReplyComposer,
+  agentDisplayById,
 }: {
   nodes: ThreadNode[];
   collapsedIds: Set<string>;
@@ -48,6 +49,14 @@ export function ThreadList({
   onCopyLink: (messageId: string) => void;
   onToggleHighlight: (messageId: string, highlighted: boolean) => void;
   renderReplyComposer: (node: ThreadNode) => React.ReactNode;
+  agentDisplayById?: Record<
+    string,
+    {
+      displayName?: string;
+      avatarSrc?: string;
+      roleLabel?: string;
+    }
+  >;
 }) {
   const childCountMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -76,6 +85,7 @@ export function ThreadList({
           onReply={() => onReply(node.id)}
           onCopyLink={() => onCopyLink(node.id)}
           onToggleHighlight={() => onToggleHighlight(node.id, !node.isHighlight)}
+          agentDisplay={node.avatarId ? agentDisplayById?.[node.avatarId] : undefined}
         >
           {renderReplyComposer(node)}
         </ThreadItem>

@@ -57,18 +57,64 @@ const parseContent = (value: OpenRouterChoice["message"]["content"]): string => 
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const parseUpstreamErrorMessage = async (response: Response): Promise<string | null> => {
+  try {
+    const raw = await response.text();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as
+        | {
+            error?:
+              | string
+              | {
+                  message?: string;
+                  code?: string | number;
+                };
+            message?: string;
+          }
+        | null;
+      if (!parsed) return raw;
+      if (typeof parsed.error === "string" && parsed.error.trim()) {
+        return parsed.error.trim();
+      }
+      if (
+        parsed.error &&
+        typeof parsed.error === "object" &&
+        typeof parsed.error.message === "string" &&
+        parsed.error.message.trim()
+      ) {
+        return parsed.error.message.trim();
+      }
+      if (typeof parsed.message === "string" && parsed.message.trim()) {
+        return parsed.message.trim();
+      }
+      return raw;
+    } catch {
+      return raw;
+    }
+  } catch {
+    return null;
+  }
+};
+
 export const callOpenRouter = async ({
   apiKey,
   modelId,
   messages,
   timeoutMs = 25_000,
   maxRetries = 2,
+  temperature,
+  responseFormat,
 }: {
   apiKey: string;
   modelId: string;
   messages: OpenRouterMessage[];
   timeoutMs?: number;
   maxRetries?: number;
+  temperature?: number;
+  responseFormat?:
+    | { type: "json_object" }
+    | { type: "json_schema"; json_schema: Record<string, unknown> };
 }): Promise<OpenRouterResult> => {
   const endpoint = `${getOpenRouterBaseUrl()}/chat/completions`;
   const { referer, title } = getOpenRouterHeaders();
@@ -91,6 +137,8 @@ export const callOpenRouter = async ({
           model: modelId,
           messages,
           stream: false,
+          ...(typeof temperature === "number" ? { temperature } : {}),
+          ...(responseFormat ? { response_format: responseFormat } : {}),
         }),
         signal: controller.signal,
       });
@@ -99,6 +147,7 @@ export const callOpenRouter = async ({
       if (!response.ok) {
         const retryAfterHeader = response.headers.get("retry-after");
         const retryAfterSec = retryAfterHeader ? Number(retryAfterHeader) : undefined;
+        const upstreamMessage = await parseUpstreamErrorMessage(response);
 
         if (transientStatuses.has(response.status) && attempt < maxRetries) {
           const baseBackoff = Math.min(2000, 350 * (attempt + 1));
@@ -124,6 +173,8 @@ export const callOpenRouter = async ({
               ? "OpenRouter rate limit reached."
               : response.status === 503
               ? "OpenRouter is temporarily unavailable."
+              : upstreamMessage
+              ? `OpenRouter error (${response.status}): ${upstreamMessage}`
               : `OpenRouter error (${response.status}).`,
           latencyMs,
         };
@@ -132,6 +183,11 @@ export const callOpenRouter = async ({
       const payload = (await response.json()) as OpenRouterResponse;
       const content = parseContent(payload?.choices?.[0]?.message?.content);
       if (!content) {
+        if (attempt < maxRetries) {
+          const backoff = Math.min(2000, 350 * (attempt + 1));
+          await sleep(backoff + Math.floor(Math.random() * 150));
+          continue;
+        }
         return {
           ok: false,
           statusCode: 502,

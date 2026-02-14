@@ -134,7 +134,7 @@ const Sessions = () => {
 
     const halfWindow = Math.floor(PAGE_WINDOW / 2);
     let start = Math.max(1, page - halfWindow);
-    let end = Math.min(totalPages, start + PAGE_WINDOW - 1);
+    const end = Math.min(totalPages, start + PAGE_WINDOW - 1);
 
     if (end - start + 1 < PAGE_WINDOW) {
       start = Math.max(1, end - PAGE_WINDOW + 1);
@@ -446,4 +446,3 @@ const Sessions = () => {
 };
 
 export default Sessions;
-

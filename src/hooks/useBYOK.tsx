@@ -1,25 +1,27 @@
 import { createContext, useContext } from 'react';
 
 interface BYOKContextType {
-  openRouterKey: string | null;
   selectedModels: string[];
   activeModels: string[];
   avatarOrder: string[];
-  storeKey: boolean;
   hasStoredOpenRouterKey: boolean;
   hasDevFallbackOpenRouterKey: boolean;
   hasConfiguredOpenRouterKey: boolean;
   keyLast4: string | null;
+  lastValidatedAt: string | null;
+  lastValidationStatus: "unknown" | "success" | "failed";
+  lastValidationError: string | null;
+  needsRevalidation: boolean;
   isLoadingKeyStatus: boolean;
 
-  setOpenRouterKey: (key: string, shouldStore?: boolean) => void;
-  clearOpenRouterKey: () => void;
-  setStoreKeyPreference: (store: boolean) => void;
   setStoredKeyStatus: (status: {
     hasStoredKey: boolean;
     keyLast4: string | null;
-    storeKey: boolean;
     hasDevFallbackKey?: boolean;
+    lastValidatedAt?: string | null;
+    lastValidationStatus?: "unknown" | "success" | "failed";
+    lastValidationError?: string | null;
+    needsRevalidation?: boolean;
   }) => void;
   refreshStoredKeyStatus: () => Promise<void>;
   setSelectedModels: (models: string[]) => void;

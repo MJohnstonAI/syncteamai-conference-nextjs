@@ -1,7 +1,7 @@
 import { useNavigate } from '@/lib/router';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Settings, Key } from 'lucide-react';
+import { Key, LogIn } from 'lucide-react';
 
 interface BYOKModalProps {
   open: boolean;
@@ -13,7 +13,7 @@ interface BYOKModalProps {
 
 /**
  * @deprecated This modal is retained only for compatibility.
- * Prefer direct navigation to /settings with explicit context.
+ * Prefer direct navigation to /auth with explicit context.
  */
 export function BYOKModal({
   open,
@@ -24,14 +24,14 @@ export function BYOKModal({
 }: BYOKModalProps) {
   const navigate = useNavigate();
 
-  const openSettings = () => {
+  const openSignIn = () => {
     const params = new URLSearchParams({
+      step: '2',
       source,
-      focus: 'byok',
       entry,
       return_to: returnTo,
     });
-    navigate(`/settings?${params.toString()}`);
+    navigate(`/auth?${params.toString()}`);
     onOpenChange(false);
   };
 
@@ -44,18 +44,18 @@ export function BYOKModal({
             Bring Your Own Key (BYOK)
           </DialogTitle>
           <DialogDescription>
-            BYOK settings have moved to a dedicated Settings page for better management.
+            BYOK setup has moved to the Sign-in page.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            BYOK is managed on Settings. Use the button below to continue with full context and then return.
+            Use the button below to open step (2) OpenRouter BYOK and then return.
           </p>
           
-          <Button onClick={openSettings} className="w-full">
-            <Settings className="h-4 w-4 mr-2" />
-            Go to Settings
+          <Button onClick={openSignIn} className="w-full">
+            <LogIn className="h-4 w-4 mr-2" />
+            Open Sign-in
           </Button>
         </div>
       </DialogContent>

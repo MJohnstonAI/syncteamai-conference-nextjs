@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { Send, Edit, Trash2 } from "lucide-react";
+import { Settings2, Edit, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -40,15 +40,12 @@ export const TemplateCard = ({ prompt, userRole, groups }: TemplateCardProps) =>
     return false;
   }, [prompt, user, userRole, isPrivilegedUser]);
 
-  const handleSendToConference = () => {
-    const params = new URLSearchParams({
-      title: prompt.title,
-      script: prompt.script,
-    });
+  const handleConfigurePanel = () => {
+    const params = new URLSearchParams();
     if (prompt.id) {
-      params.set("prompt_id", prompt.id);
+      params.set("templateId", prompt.id);
     }
-    navigate(`/conference?${params.toString()}`);
+    navigate(`/configure?${params.toString()}`);
   };
 
   const handleEdit = () => {
@@ -90,9 +87,9 @@ export const TemplateCard = ({ prompt, userRole, groups }: TemplateCardProps) =>
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={handleSendToConference} className="flex-1 sm:flex-initial">
-            <Send className="h-3 w-3 mr-2" />
-            Send to Conference
+          <Button size="sm" onClick={handleConfigurePanel} className="flex-1 sm:flex-initial">
+            <Settings2 className="h-3 w-3 mr-2" />
+            Configure AI Panel
           </Button>
           {canEdit && (
             <>

@@ -1,8 +1,19 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { getByokStatus, removeByokKey, saveByokKey } from "@/lib/server/byok";
-import { getOpenRouterBaseUrl, getOpenRouterHeaders } from "@/lib/server/env";
+import {
+  getByokStatus,
+  getEffectiveOpenRouterKey,
+  removeByokKey,
+  saveByokKey,
+  updateByokValidationState,
+} from "@/lib/server/byok";
+import {
+  getByokEncryptionSecret,
+  getOpenRouterBaseUrl,
+  getOpenRouterHeaders,
+} from "@/lib/server/env";
 import { requireRequestUser } from "@/lib/server/supabase-server";
 import { enforceRateLimit, resolveRequestIdentity } from "@/lib/server/rate-limit";
 
@@ -15,10 +26,8 @@ const updateSchema = z.object({
     .trim()
     .min(10)
     .max(500)
-    .regex(/^\S+$/, "OpenRouter key must not contain whitespace")
-    .optional(),
-  storeKey: z.boolean(),
-});
+    .regex(/^\S+$/, "OpenRouter key must not contain whitespace"),
+}).strict();
 
 const noStoreHeaders = {
   "Cache-Control": "no-store, max-age=0",
@@ -34,6 +43,8 @@ const jsonNoStore = (body: unknown, init?: ResponseInit) =>
   });
 
 const unauthorized = () => jsonNoStore({ error: "Unauthorized" }, { status: 401 });
+const forbidden = (message: string) =>
+  jsonNoStore({ error: message, code: "FORBIDDEN_ORIGIN" }, { status: 403 });
 
 const tooManyRequests = (retryAfterSec: number) =>
   jsonNoStore(
@@ -49,6 +60,134 @@ const tooManyRequests = (retryAfterSec: number) =>
       },
     }
   );
+
+const normalizeOrigin = (value: string | null): string | null => {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch {
+    return null;
+  }
+};
+
+const getAllowedOrigins = (request: Request): string[] => {
+  const allowed = new Set<string>();
+  const appUrlOrigin = normalizeOrigin(process.env.NEXT_PUBLIC_APP_URL ?? null);
+  if (appUrlOrigin) {
+    allowed.add(appUrlOrigin);
+  }
+
+  const headerHost = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  const headerProtoRaw = request.headers.get("x-forwarded-proto");
+  const headerProto = headerProtoRaw?.split(",")[0]?.trim();
+  if (headerHost) {
+    const protocol =
+      headerProto && (headerProto === "https" || headerProto === "http")
+        ? headerProto
+        : new URL(request.url).protocol.replace(":", "");
+    allowed.add(`${protocol}://${headerHost}`.toLowerCase());
+  }
+
+  const requestOrigin = normalizeOrigin(request.url);
+  if (requestOrigin) {
+    allowed.add(requestOrigin);
+  }
+
+  return [...allowed];
+};
+
+const isTrustedMutationRequest = (request: Request): boolean => {
+  const allowedOrigins = getAllowedOrigins(request);
+  if (allowedOrigins.length === 0) {
+    return true;
+  }
+
+  const origin = normalizeOrigin(request.headers.get("origin"));
+  if (origin) {
+    return allowedOrigins.includes(origin);
+  }
+
+  const refererOrigin = normalizeOrigin(request.headers.get("referer"));
+  if (refererOrigin) {
+    return allowedOrigins.includes(refererOrigin);
+  }
+
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && !["same-origin", "same-site", "none"].includes(fetchSite)) {
+    return false;
+  }
+
+  return true;
+};
+
+type ValidationResult = {
+  ok: boolean;
+  statusCode: number | null;
+  message: string | null;
+};
+
+const resolveAuditSalt = (): string =>
+  process.env.BYOK_AUDIT_SALT?.trim() || getByokEncryptionSecret();
+
+const hashAuditField = (value: string | null): string | null => {
+  if (!value) return null;
+  return crypto
+    .createHash("sha256")
+    .update(`${resolveAuditSalt()}:${value}`)
+    .digest("hex")
+    .slice(0, 40);
+};
+
+const extractClientIp = (request: Request): string | null => {
+  const raw =
+    request.headers.get("x-forwarded-for") ??
+    request.headers.get("cf-connecting-ip") ??
+    request.headers.get("x-real-ip");
+  if (!raw) return null;
+  return raw.split(",")[0]?.trim() ?? null;
+};
+
+const recordAuditEvent = async ({
+  supabase,
+  request,
+  userId,
+  action,
+  success,
+  statusCode,
+  errorCode,
+  metadata,
+}: {
+  supabase: SupabaseClient;
+  request: Request;
+  userId: string;
+  action: "validate" | "save" | "remove" | "status_check";
+  success: boolean;
+  statusCode?: number | null;
+  errorCode?: string | null;
+  metadata?: Record<string, unknown>;
+}) => {
+  try {
+    const { error } = await supabase.from("user_api_key_audit_events").insert({
+      user_id: userId,
+      provider: "openrouter",
+      action,
+      success,
+      status_code: statusCode ?? null,
+      error_code: errorCode ?? null,
+      ip_hash: hashAuditField(extractClientIp(request)),
+      user_agent_hash: hashAuditField(request.headers.get("user-agent")),
+      metadata: metadata ?? {},
+      source: "api",
+    });
+    if (error) {
+      console.warn("[BYOK] Failed to write BYOK audit event:", error.message);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown audit error";
+    console.warn("[BYOK] Failed to write BYOK audit event:", message);
+  }
+};
 
 const classifyServerError = (error: unknown): { status: number; message: string } => {
   const raw = error instanceof Error ? error.message : "";
@@ -75,6 +214,46 @@ const classifyServerError = (error: unknown): { status: number; message: string 
     return {
       status: 500,
       message: "BYOK storage is not initialized. Apply latest Supabase migrations.",
+    };
+  }
+
+  if (
+    normalized.includes("column user_api_keys.key_last4 does not exist") ||
+    normalized.includes("column user_api_keys.store_key does not exist") ||
+    normalized.includes("column user_api_keys.encryption_kid does not exist") ||
+    normalized.includes("column user_api_keys.last_validated_at does not exist") ||
+    normalized.includes("column user_api_keys.last_validation_status does not exist") ||
+    normalized.includes("could not find the 'key_last4' column") ||
+    normalized.includes("could not find the 'store_key' column") ||
+    normalized.includes("could not find the 'encryption_kid' column") ||
+    normalized.includes("could not find the 'last_validated_at' column") ||
+    normalized.includes("could not find the 'last_validation_status' column")
+  ) {
+    return {
+      status: 500,
+      message: "BYOK schema is outdated. Apply latest Supabase migrations.",
+    };
+  }
+
+  if (
+    normalized.includes("column \"last_four\"") ||
+    normalized.includes("column user_api_keys.last_four") ||
+    normalized.includes("user_api_keys_last_four") ||
+    normalized.includes("last_four")
+  ) {
+    return {
+      status: 500,
+      message: "BYOK schema is outdated. Apply latest Supabase migrations.",
+    };
+  }
+
+  if (
+    normalized.includes("relation \"public.user_api_key_audit_events\" does not exist") ||
+    normalized.includes("relation \"user_api_key_audit_events\" does not exist")
+  ) {
+    return {
+      status: 500,
+      message: "BYOK audit schema is missing. Apply latest Supabase migrations.",
     };
   }
 
@@ -135,7 +314,7 @@ const ensureProfileAndRole = async ({
   }
 };
 
-const validateOpenRouterKey = async (key: string): Promise<boolean> => {
+const validateOpenRouterKey = async (key: string): Promise<ValidationResult> => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
@@ -150,9 +329,24 @@ const validateOpenRouterKey = async (key: string): Promise<boolean> => {
       signal: controller.signal,
       cache: "no-store",
     });
-    return response.ok;
+    if (!response.ok) {
+      return {
+        ok: false,
+        statusCode: response.status,
+        message: "OpenRouter key validation failed.",
+      };
+    }
+    return {
+      ok: true,
+      statusCode: response.status,
+      message: null,
+    };
   } catch {
-    return false;
+    return {
+      ok: false,
+      statusCode: null,
+      message: "OpenRouter validation request failed.",
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -166,7 +360,35 @@ export async function GET(request: Request) {
       userId: user.id,
       email: user.email,
     });
-    const status = await getByokStatus(supabase, user.id, "openrouter");
+    let status = await getByokStatus(supabase, user.id, "openrouter");
+
+    if (status.hasStoredKey && status.needsRevalidation) {
+      const persistedKey = await getEffectiveOpenRouterKey({
+        supabase,
+        userId: user.id,
+      });
+      if (persistedKey) {
+        const validation = await validateOpenRouterKey(persistedKey);
+        await updateByokValidationState({
+          supabase,
+          userId: user.id,
+          provider: "openrouter",
+          status: validation.ok ? "success" : "failed",
+          errorMessage: validation.ok ? null : validation.message,
+        });
+        await recordAuditEvent({
+          supabase,
+          request,
+          userId: user.id,
+          action: "status_check",
+          success: validation.ok,
+          statusCode: validation.statusCode,
+          errorCode: validation.ok ? null : "VALIDATION_FAILED",
+        });
+        status = await getByokStatus(supabase, user.id, "openrouter");
+      }
+    }
+
     return jsonNoStore(status);
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
@@ -179,6 +401,10 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    if (!isTrustedMutationRequest(request)) {
+      return forbidden("Invalid request origin for BYOK update.");
+    }
+
     const { user, supabase } = await requireRequestUser(request);
     const identity = resolveRequestIdentity(request, user.id);
     const userLimit = await enforceRateLimit({
@@ -208,24 +434,22 @@ export async function POST(request: Request) {
     });
 
     const payload = updateSchema.parse(await request.json());
-    const normalizedKey = payload.key?.trim();
-    const existing = await getByokStatus(supabase, user.id, payload.provider);
-
-    if (payload.storeKey && !normalizedKey && !existing.hasStoredKey) {
+    const normalizedKey = payload.key.trim();
+    const validation = await validateOpenRouterKey(normalizedKey);
+    await recordAuditEvent({
+      supabase,
+      request,
+      userId: user.id,
+      action: "validate",
+      success: validation.ok,
+      statusCode: validation.statusCode,
+      errorCode: validation.ok ? null : "VALIDATION_FAILED",
+    });
+    if (!validation.ok) {
       return jsonNoStore(
-        { error: "Provide an OpenRouter key before enabling storage." },
+        { error: validation.message ?? "OpenRouter key validation failed." },
         { status: 400 }
       );
-    }
-
-    if (normalizedKey) {
-      const isValid = await validateOpenRouterKey(normalizedKey);
-      if (!isValid) {
-        return jsonNoStore(
-          { error: "OpenRouter key validation failed." },
-          { status: 400 }
-        );
-      }
     }
 
     const status = await saveByokKey({
@@ -233,7 +457,18 @@ export async function POST(request: Request) {
       userId: user.id,
       provider: payload.provider,
       plainKey: normalizedKey,
-      storeKey: payload.storeKey,
+    });
+
+    await recordAuditEvent({
+      supabase,
+      request,
+      userId: user.id,
+      action: "save",
+      success: true,
+      statusCode: 200,
+      metadata: {
+        keyLast4: status.keyLast4,
+      },
     });
 
     return jsonNoStore(status);
@@ -254,6 +489,10 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    if (!isTrustedMutationRequest(request)) {
+      return forbidden("Invalid request origin for BYOK removal.");
+    }
+
     const { user, supabase } = await requireRequestUser(request);
     await ensureProfileAndRole({
       supabase,
@@ -261,6 +500,14 @@ export async function DELETE(request: Request) {
       email: user.email,
     });
     await removeByokKey({ supabase, userId: user.id, provider: "openrouter" });
+    await recordAuditEvent({
+      supabase,
+      request,
+      userId: user.id,
+      action: "remove",
+      success: true,
+      statusCode: 200,
+    });
     return jsonNoStore({ success: true });
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {

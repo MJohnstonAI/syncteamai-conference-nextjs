@@ -19,6 +19,7 @@ export function ThreadItem({
   onToggleCollapse,
   onCopyLink,
   onToggleHighlight,
+  agentDisplay,
   children,
 }: {
   node: ThreadNode;
@@ -32,6 +33,11 @@ export function ThreadItem({
   onToggleCollapse: () => void;
   onCopyLink: () => void;
   onToggleHighlight: () => void;
+  agentDisplay?: {
+    displayName?: string;
+    avatarSrc?: string;
+    roleLabel?: string;
+  };
   children?: React.ReactNode;
 }) {
   const indentPx = Math.min(node.depth, 10) * 22;
@@ -76,7 +82,12 @@ export function ThreadItem({
             onClick={onSelect}
             className="inline-flex min-w-0 items-center gap-2 text-left"
           >
-            <AgentBadge agentId={node.avatarId} />
+            <AgentBadge
+              agentId={node.avatarId}
+              displayName={agentDisplay?.displayName}
+              avatarSrc={agentDisplay?.avatarSrc}
+              roleLabel={agentDisplay?.roleLabel}
+            />
           </button>
 
           {roundLabel ? <RoundPill label={roundLabel} /> : null}

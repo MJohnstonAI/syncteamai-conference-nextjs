@@ -15,6 +15,15 @@ const sanitizeParam = (value: string | null | undefined) => {
   return value;
 };
 
+const isModelEndpointOrPolicyIssue = (message: string): boolean => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("no endpoints found") ||
+    normalized.includes("data policy") ||
+    normalized.includes("zero data retention")
+  );
+};
+
 const buildThreadUrl = ({
   conversationId,
   roundId,
@@ -112,6 +121,84 @@ export const streamAgentGeneration = async ({
   } | null;
   latencyMs: number | null;
 }> => {
+  const runNonStreamFallback = async () => {
+    const fallbackResponse = await authedFetch("/api/ai/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey ? { "x-idempotency-key": `${idempotencyKey}:fallback` } : {}),
+      },
+      body: JSON.stringify({
+        conversationId,
+        roundId: roundId ?? undefined,
+        selectedAvatar,
+        modelId,
+        messages,
+        idempotencyKey: idempotencyKey ? `${idempotencyKey}:fallback` : undefined,
+      }),
+      signal,
+    });
+
+    const fallbackPayload = (await fallbackResponse.json().catch(() => null)) as
+      | {
+          response?: string;
+          usage?: {
+            promptTokens?: number;
+            completionTokens?: number;
+            totalTokens?: number;
+          };
+          latencyMs?: number | null;
+          error?: string;
+        }
+      | null;
+
+    if (!fallbackResponse.ok || !fallbackPayload?.response?.trim()) {
+      throw new Error(
+        fallbackPayload?.error ??
+          (fallbackResponse.ok
+            ? "Model returned an empty response in fallback mode."
+            : "Non-stream fallback request failed.")
+      );
+    }
+
+    onDelta(fallbackPayload.response);
+
+    return {
+      content: fallbackPayload.response,
+      usage: fallbackPayload.usage
+        ? {
+            promptTokens: Number(fallbackPayload.usage.promptTokens ?? 0),
+            completionTokens: Number(fallbackPayload.usage.completionTokens ?? 0),
+            totalTokens: Number(fallbackPayload.usage.totalTokens ?? 0),
+          }
+        : null,
+      latencyMs:
+        typeof fallbackPayload.latencyMs === "number" ? fallbackPayload.latencyMs : null,
+    };
+  };
+
+  const shouldFallbackFromStream = (statusCode: number | null, message: string, hasContent: boolean) => {
+    if (hasContent) return false;
+    const normalized = message.toLowerCase();
+    if (statusCode === 404 && isModelEndpointOrPolicyIssue(message)) {
+      return true;
+    }
+    if (statusCode === 401 || statusCode === 403 || statusCode === 409 || statusCode === 429) {
+      return false;
+    }
+    if (statusCode === 400 || statusCode === 422 || statusCode === 500 || statusCode === 502 || statusCode === 503 || statusCode === 504) {
+      if (statusCode === 400 || statusCode === 422) {
+        return isModelEndpointOrPolicyIssue(message) || normalized.includes("model");
+      }
+      return true;
+    }
+    return (
+      normalized.includes("empty streamed response") ||
+      normalized.includes("stream failed") ||
+      normalized.includes("openrouter request failed")
+    );
+  };
+
   const response = await authedFetch("/api/ai/generate-stream", {
     method: "POST",
     headers: {
@@ -130,11 +217,15 @@ export const streamAgentGeneration = async ({
   });
 
   if (!response.ok) {
-    throw new Error(await getThreadErrorMessage(response));
+    const streamError = await getThreadErrorMessage(response);
+    if (shouldFallbackFromStream(response.status, streamError, false)) {
+      return runNonStreamFallback();
+    }
+    throw new Error(streamError);
   }
 
   if (!response.body) {
-    throw new Error("Streaming response body is unavailable.");
+    return runNonStreamFallback();
   }
 
   const decoder = new TextDecoder();
@@ -216,31 +307,39 @@ export const streamAgentGeneration = async ({
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        handleLine(line);
+        newlineIndex = buffer.indexOf("\n");
+      }
     }
 
-    buffer += decoder.decode(value, { stream: true });
-    let newlineIndex = buffer.indexOf("\n");
-    while (newlineIndex >= 0) {
-      const line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
-      handleLine(line);
-      newlineIndex = buffer.indexOf("\n");
+    if (buffer.trim().length > 0) {
+      handleLine(buffer);
     }
-  }
 
-  if (buffer.trim().length > 0) {
-    handleLine(buffer);
-  }
+    if (!content.trim()) {
+      return runNonStreamFallback();
+    }
 
-  if (!content.trim()) {
-    throw new Error("Model returned an empty streamed response.");
+    return { content, usage, latencyMs };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Streaming generation failed.";
+    if (shouldFallbackFromStream(null, message, Boolean(content.trim()))) {
+      return runNonStreamFallback();
+    }
+    throw error;
   }
-
-  return { content, usage, latencyMs };
 };
 
 type CreateReplyInput = {

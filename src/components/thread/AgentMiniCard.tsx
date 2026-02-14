@@ -1,8 +1,29 @@
+import { useEffect, useState } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { getAgentMeta } from "@/lib/agents";
+import { getAgentMeta, STANDARD_AGENT_AVATAR } from "@/lib/agents";
 
-export function AgentMiniCard({ agentId }: { agentId: string | null }) {
+export function AgentMiniCard({
+  agentId,
+  displayName,
+  avatarSrc,
+  roleLabel,
+}: {
+  agentId: string | null;
+  displayName?: string;
+  avatarSrc?: string;
+  roleLabel?: string;
+}) {
+  const meta = getAgentMeta(agentId);
+  const resolvedName = displayName?.trim() || meta?.name || agentId || "You";
+  const resolvedRole = roleLabel?.trim() || meta?.roleLabel || "Agent";
+  const requestedAvatar = avatarSrc?.trim() || meta?.image || STANDARD_AGENT_AVATAR;
+  const [resolvedAvatar, setResolvedAvatar] = useState(requestedAvatar);
+
+  useEffect(() => {
+    setResolvedAvatar(requestedAvatar);
+  }, [requestedAvatar]);
+
   if (!agentId) {
     return (
       <div className="rounded-lg border bg-card p-3">
@@ -12,26 +33,25 @@ export function AgentMiniCard({ agentId }: { agentId: string | null }) {
     );
   }
 
-  const meta = getAgentMeta(agentId);
-  if (!meta) {
-    return (
-      <div className="rounded-lg border bg-card p-3">
-        <div className="text-sm font-medium">{agentId}</div>
-        <div className="text-xs text-muted-foreground">Unknown agent</div>
-      </div>
-    );
-  }
-
   return (
     <div className="rounded-lg border bg-card p-3">
       <div className="flex items-center gap-3">
         <Avatar className="h-10 w-10 border">
-          <img src={meta.image} alt={meta.name} className="h-full w-full object-cover" />
+          <img
+            src={resolvedAvatar}
+            alt={resolvedName}
+            className="h-full w-full object-cover"
+            onError={() => {
+              if (resolvedAvatar !== STANDARD_AGENT_AVATAR) {
+                setResolvedAvatar(STANDARD_AGENT_AVATAR);
+              }
+            }}
+          />
         </Avatar>
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold">{meta.name}</div>
+          <div className="truncate text-sm font-semibold">{resolvedName}</div>
           <Badge variant="secondary" className="mt-1 text-[10px]">
-            {meta.roleLabel}
+            {resolvedRole}
           </Badge>
         </div>
       </div>

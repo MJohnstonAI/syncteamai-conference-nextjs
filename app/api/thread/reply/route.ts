@@ -143,6 +143,7 @@ export async function POST(request: Request) {
       .from("messages")
       .insert({
         conversation_id: body.conversationId,
+        user_id: user.id,
         parent_message_id: body.parentMessageId ?? null,
         round_id: resolvedRoundId,
         role,
@@ -179,8 +180,19 @@ export async function POST(request: Request) {
       return unauthorized();
     }
     if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: "Invalid request payload." }, { status: 400 });
+      return NextResponse.json(
+        {
+          error: "Invalid request payload.",
+          details: error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
+        },
+        { status: 400 }
+      );
     }
-    return NextResponse.json({ error: "Failed to create reply." }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Failed to create reply.";
+    console.error("[/api/thread/reply] create failed", error);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

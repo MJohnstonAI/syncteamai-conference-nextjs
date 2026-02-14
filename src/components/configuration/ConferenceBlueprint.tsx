@@ -29,8 +29,9 @@ export default function ConferenceBlueprint({
   onLaunch,
   onSaveDraft,
 }: ConferenceBlueprintProps) {
+  const minimumAgentsRequired = 2;
   const isLaunchReady =
-    Boolean(templateData) && expertPanel.length >= 3 && estimatedCost.max > 0;
+    Boolean(templateData) && expertPanel.length >= minimumAgentsRequired && estimatedCost.max > 0;
 
   const modeLabel = selectedMode === "quick-start" ? "Quick Start" : "Custom Setup";
   const budgetHealth = useMemo(() => {
@@ -167,4 +168,3 @@ function BlueprintItem({
     </div>
   );
 }
-

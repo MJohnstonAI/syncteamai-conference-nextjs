@@ -44,19 +44,41 @@ const writeSse = (controller: ReadableStreamDefaultController<Uint8Array>, event
 
 const parseChunkText = (value: unknown): string => {
   if (typeof value === "string") return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const maybeText = (value as { text?: unknown }).text;
+    if (typeof maybeText === "string") return maybeText;
+  }
   if (!Array.isArray(value)) return "";
   return value
-    .map((part) => (typeof part?.text === "string" ? part.text : ""))
+    .map((part) => {
+      if (typeof part?.text === "string") return part.text;
+      if (typeof part === "string") return part;
+      return "";
+    })
     .join("");
 };
 
 const extractDelta = (payload: unknown): string => {
-  const choice = (payload as { choices?: Array<{ delta?: { content?: unknown }; message?: { content?: unknown } }> })
+  const choice = (
+    payload as {
+      choices?: Array<{
+        delta?: { content?: unknown; reasoning?: unknown; text?: unknown };
+        message?: { content?: unknown };
+        text?: unknown;
+      }>;
+      output_text?: unknown;
+    }
+  )
     ?.choices?.[0];
-  if (!choice) return "";
-  const deltaContent = parseChunkText(choice.delta?.content);
-  if (deltaContent) return deltaContent;
-  return parseChunkText(choice.message?.content);
+  const candidates = [
+    parseChunkText(choice?.delta?.content),
+    parseChunkText(choice?.delta?.text),
+    parseChunkText(choice?.delta?.reasoning),
+    parseChunkText(choice?.message?.content),
+    parseChunkText(choice?.text),
+    parseChunkText((payload as { output_text?: unknown })?.output_text),
+  ];
+  return candidates.find((value) => value.length > 0) ?? "";
 };
 
 const extractUsage = (payload: unknown): { promptTokens: number; completionTokens: number; totalTokens: number } | null => {
@@ -71,6 +93,46 @@ const extractUsage = (payload: unknown): { promptTokens: number; completionToken
     completionTokens: Number.isFinite(completionTokens) ? completionTokens : 0,
     totalTokens: Number.isFinite(totalTokens) ? totalTokens : 0,
   };
+};
+
+const parseUpstreamErrorMessage = async (response: Response): Promise<string | null> => {
+  try {
+    const raw = await response.text();
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as
+        | {
+            error?:
+              | string
+              | {
+                  message?: string;
+                  code?: string | number;
+                };
+            message?: string;
+          }
+        | null;
+      if (!parsed) return raw;
+      if (typeof parsed.error === "string" && parsed.error.trim()) {
+        return parsed.error.trim();
+      }
+      if (
+        parsed.error &&
+        typeof parsed.error === "object" &&
+        typeof parsed.error.message === "string" &&
+        parsed.error.message.trim()
+      ) {
+        return parsed.error.message.trim();
+      }
+      if (typeof parsed.message === "string" && parsed.message.trim()) {
+        return parsed.message.trim();
+      }
+      return raw;
+    } catch {
+      return raw;
+    }
+  } catch {
+    return null;
+  }
 };
 
 export async function POST(request: Request) {
@@ -248,6 +310,7 @@ export async function POST(request: Request) {
       if (upstream.status === 503 || upstream.status === 504) {
         await openCircuitFor({ provider: "openrouter", ttlSec: 20 });
       }
+      const upstreamMessage = await parseUpstreamErrorMessage(upstream);
 
       await writeUsageEvent({
         userId: user.id,
@@ -266,7 +329,12 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: upstream.status === 429 ? "OpenRouter rate limit reached." : "OpenRouter request failed.",
+          error:
+            upstream.status === 429
+              ? "OpenRouter rate limit reached."
+              : upstreamMessage
+              ? `OpenRouter request failed (${upstream.status}): ${upstreamMessage}`
+              : `OpenRouter request failed (${upstream.status}).`,
           code: upstream.status === 429 ? "RATE_LIMITED" : "UPSTREAM_ERROR",
         },
         { status: upstream.status >= 400 ? upstream.status : 502 }
@@ -372,7 +440,11 @@ export async function POST(request: Request) {
               }
               if (!finished) {
                 if (!content.trim()) {
-                  void finalize("error", 502, "OpenRouter returned an empty streamed response.");
+                  void finalize(
+                    "error",
+                    502,
+                    `OpenRouter returned an empty streamed response for ${body.modelId}.`
+                  );
                   return;
                 }
                 writeSse(controller, "done", {
@@ -429,6 +501,10 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({ error: "Streaming generation failed due to a server error." }, { status: 500 });
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Streaming generation failed due to a server error.";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

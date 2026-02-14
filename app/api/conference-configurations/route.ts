@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { applyTemplateRoleOverridesToPanel } from "@/lib/ai/challenge-analyzer";
 import { buildTemplateDataFromPrompt } from "@/lib/configuration/template-data";
+import type { ChallengeAnalysis, ExpertRole, TemplateData } from "@/lib/configuration/types";
 import { requireRequestUser } from "@/lib/server/supabase-server";
 
 export const runtime = "nodejs";
@@ -107,6 +109,52 @@ type ConfigurationRow = {
   updated_at: string;
 };
 
+const asExpertPanel = (value: unknown): ExpertRole[] =>
+  Array.isArray(value) ? (value as ExpertRole[]) : [];
+
+const applyOverridesToAnalysisPayload = (
+  value: unknown,
+  templateData: TemplateData
+): unknown => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const analysis = value as Partial<ChallengeAnalysis> & Record<string, unknown>;
+  const expertPanel = asExpertPanel(analysis.expertPanel);
+  if (expertPanel.length === 0) {
+    return value;
+  }
+
+  return {
+    ...analysis,
+    expertPanel: applyTemplateRoleOverridesToPanel({
+      templateData,
+      panel: expertPanel,
+      maxRoles: 12,
+    }),
+  };
+};
+
+const applyOverridesToConfiguration = (
+  value: ConfigurationRow | null,
+  templateData: TemplateData
+): ConfigurationRow | null => {
+  if (!value) {
+    return null;
+  }
+
+  return {
+    ...value,
+    expert_panel: applyTemplateRoleOverridesToPanel({
+      templateData,
+      panel: asExpertPanel(value.expert_panel),
+      maxRoles: 12,
+    }),
+    analysis_payload: applyOverridesToAnalysisPayload(value.analysis_payload, templateData),
+  };
+};
+
 const toConfigurationRow = (value: unknown): ConfigurationRow | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -211,10 +259,14 @@ export async function GET(request: Request) {
       throw new Error(configurationError.message);
     }
 
-    const normalizedConfiguration = toConfigurationRow(configuration);
+    const templateData = buildTemplateDataFromPrompt(template);
+    const normalizedConfiguration = applyOverridesToConfiguration(
+      toConfigurationRow(configuration),
+      templateData
+    );
 
     return NextResponse.json({
-      template: buildTemplateDataFromPrompt(template),
+      template: templateData,
       templateMeta: {
         isDemo: template.is_demo,
         ownerUserId: template.user_id,
@@ -276,10 +328,30 @@ export async function POST(request: Request) {
     }
 
     const current = toConfigurationRow(existingConfiguration);
-    const normalizedPanel =
+    const templateDataForOverrides: TemplateData = body.templateData
+      ? (body.templateData as TemplateData)
+      : buildTemplateDataFromPrompt(template);
+    const aiAnalysisInput = body.aiAnalysis as ChallengeAnalysis | undefined;
+    const incomingPanel =
       body.expertPanel ??
-      body.aiAnalysis?.expertPanel ??
-      (Array.isArray(current?.expert_panel) ? current.expert_panel : []);
+      aiAnalysisInput?.expertPanel ??
+      (Array.isArray(current?.expert_panel) ? (current.expert_panel as ExpertRole[]) : []);
+    const normalizedPanel = applyTemplateRoleOverridesToPanel({
+      templateData: templateDataForOverrides,
+      panel: asExpertPanel(incomingPanel),
+      maxRoles: 12,
+    });
+
+    const normalizedAiAnalysis: ChallengeAnalysis | undefined = aiAnalysisInput
+      ? {
+          ...aiAnalysisInput,
+          expertPanel: applyTemplateRoleOverridesToPanel({
+            templateData: templateDataForOverrides,
+            panel: asExpertPanel(aiAnalysisInput.expertPanel),
+            maxRoles: 12,
+          }),
+        }
+      : undefined;
 
     const selectedMode =
       body.selectedMode ??
@@ -308,21 +380,33 @@ export async function POST(request: Request) {
           template_title: templateTitle,
           template_script: templateScript,
           problem_statement: problemStatement,
-          problem_type: body.aiAnalysis?.problemType ?? current?.problem_type ?? body.templateData?.type ?? null,
-          complexity_score: body.aiAnalysis?.complexityScore ?? current?.complexity_score ?? null,
+          problem_type:
+            normalizedAiAnalysis?.problemType ??
+            current?.problem_type ??
+            body.templateData?.type ??
+            null,
+          complexity_score:
+            normalizedAiAnalysis?.complexityScore ?? current?.complexity_score ?? null,
           recommended_strategy:
-            body.aiAnalysis?.recommendedStrategy ?? current?.recommended_strategy ?? null,
-          strategy_reason: body.aiAnalysis?.strategyReason ?? current?.strategy_reason ?? null,
+            normalizedAiAnalysis?.recommendedStrategy ??
+            current?.recommended_strategy ??
+            null,
+          strategy_reason:
+            normalizedAiAnalysis?.strategyReason ?? current?.strategy_reason ?? null,
           key_considerations:
-            body.aiAnalysis?.keyConsiderations ?? current?.key_considerations ?? null,
+            normalizedAiAnalysis?.keyConsiderations ??
+            current?.key_considerations ??
+            null,
           expert_panel: normalizedPanel,
-          analysis_payload: body.aiAnalysis ?? current?.analysis_payload ?? null,
+          analysis_payload: normalizedAiAnalysis ?? current?.analysis_payload ?? null,
           estimated_cost_min:
-            body.aiAnalysis?.estimatedCost.min ?? current?.estimated_cost_min ?? null,
+            normalizedAiAnalysis?.estimatedCost.min ?? current?.estimated_cost_min ?? null,
           estimated_cost_max:
-            body.aiAnalysis?.estimatedCost.max ?? current?.estimated_cost_max ?? null,
+            normalizedAiAnalysis?.estimatedCost.max ?? current?.estimated_cost_max ?? null,
           estimated_duration:
-            body.aiAnalysis?.estimatedDuration ?? current?.estimated_duration ?? null,
+            normalizedAiAnalysis?.estimatedDuration ??
+            current?.estimated_duration ??
+            null,
         },
         {
           onConflict: "template_id",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, Plus, RefreshCw } from "lucide-react";
 import AIAnalysisLoader from "@/components/configuration/AIAnalysisLoader";
 import AIAnalysisResult from "@/components/configuration/AIAnalysisResult";
 import ChallengeSummary from "@/components/configuration/ChallengeSummary";
@@ -81,6 +81,57 @@ const extractAnalysis = (
   };
 };
 
+const isUserDefinedExpert = (role: ExpertRole): boolean =>
+  role.id.startsWith("role_custom_") ||
+  /user-defined expert/i.test(role.whyIncluded);
+
+const createUserDefinedExpertRole = ({
+  panel,
+}: {
+  panel: ExpertRole[];
+}): ExpertRole => {
+  const defaultModel =
+    panel[0]?.model ?? {
+      provider: "google",
+      modelId: "google/gemini-2.5-flash",
+      displayName: "Gemini 2.5 Flash",
+    };
+  const customCount = panel.filter(isUserDefinedExpert).length + 1;
+  const localId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID().replace(/-/g, "").slice(0, 12)
+      : `${Date.now()}`;
+
+  return {
+    id: `role_custom_${localId}`,
+    title: `Custom Expert ${customCount}`,
+    category: "User Defined Expert",
+    icon: "users",
+    description:
+      "Define the custom perspective this expert should contribute to the debate.",
+    focusAreas: ["custom perspective"],
+    behavior: {
+      archetype: "analytical",
+      temperature: 0.5,
+      responseLength: "medium",
+      interactionStyle: ["adds evidence", "responds to prior arguments"],
+    },
+    model: {
+      provider: defaultModel.provider,
+      modelId: defaultModel.modelId,
+      displayName: defaultModel.displayName,
+    },
+    whyIncluded: "User-defined expert added in Custom Setup.",
+    priority: "recommended",
+  };
+};
+
+const filterExcludedRoles = (panel: ExpertRole[], excludedRoleIds: string[]) => {
+  if (excludedRoleIds.length === 0) return panel;
+  const excludedSet = new Set(excludedRoleIds);
+  return panel.filter((role) => !excludedSet.has(role.id));
+};
+
 const Configure = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -92,25 +143,56 @@ const Configure = () => {
   const [configurationId, setConfigurationId] = useState<string | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<ChallengeAnalysis | null>(null);
   const [selectedMode, setSelectedMode] = useState<ConfigurationMode>("quick-start");
-  const [expertPanel, setExpertPanel] = useState<ExpertRole[]>([]);
+  const [quickStartPanel, setQuickStartPanel] = useState<ExpertRole[]>([]);
+  const [customExpertPanel, setCustomExpertPanel] = useState<ExpertRole[]>([]);
+  const [quickExcludedRoleIds, setQuickExcludedRoleIds] = useState<string[]>([]);
+  const [customExcludedRoleIds, setCustomExcludedRoleIds] = useState<string[]>([]);
   const [isTemplateLoading, setIsTemplateLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isLaunching, setIsLaunching] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [customizingRoleId, setCustomizingRoleId] = useState<string | null>(null);
+  const [customizingMode, setCustomizingMode] = useState<ConfigurationMode | null>(null);
+  const [pendingCustomRole, setPendingCustomRole] = useState<ExpertRole | null>(null);
   const loadedTemplateIdRef = useRef<string | null>(null);
 
   const canEdit = Boolean(templateMeta?.canEdit);
+  const isCustomMode = selectedMode === "custom";
+  const activeModePanel = isCustomMode ? customExpertPanel : quickStartPanel;
+  const activeExcludedRoleIds = isCustomMode ? customExcludedRoleIds : quickExcludedRoleIds;
+  const quickIncludedPanel = useMemo(
+    () => filterExcludedRoles(quickStartPanel, quickExcludedRoleIds),
+    [quickExcludedRoleIds, quickStartPanel]
+  );
+  const customIncludedPanel = useMemo(
+    () => filterExcludedRoles(customExpertPanel, customExcludedRoleIds),
+    [customExcludedRoleIds, customExpertPanel]
+  );
+  const includedPanel = isCustomMode ? customIncludedPanel : quickIncludedPanel;
+  const includedExpertCount = includedPanel.length;
+  const activeExcludedRoleIdSet = useMemo(
+    () => new Set(activeExcludedRoleIds),
+    [activeExcludedRoleIds]
+  );
 
   const customizingRole = useMemo(
-    () => expertPanel.find((role) => role.id === customizingRoleId) ?? null,
-    [customizingRoleId, expertPanel]
+    () =>
+      pendingCustomRole ??
+      quickStartPanel.find((role) => role.id === customizingRoleId) ??
+      customExpertPanel.find((role) => role.id === customizingRoleId) ??
+      null,
+    [customExpertPanel, customizingRoleId, pendingCustomRole, quickStartPanel]
+  );
+
+  const userDefinedExpertCount = useMemo(
+    () => customExpertPanel.filter(isUserDefinedExpert).length,
+    [customExpertPanel]
   );
 
   const estimatedCost = useMemo(
-    () => resolveEstimatedCost(expertPanel, aiAnalysis?.estimatedCost ?? null),
-    [aiAnalysis?.estimatedCost, expertPanel]
+    () => resolveEstimatedCost(includedPanel, aiAnalysis?.estimatedCost ?? null),
+    [aiAnalysis?.estimatedCost, includedPanel]
   );
 
   const strategyLabel = useMemo(
@@ -202,18 +284,23 @@ const Configure = () => {
       setLoadError(null);
       try {
         const analysis = await analyzeChallenge(seedTemplate, mode, isRefresh);
-        const panel = analysis.expertPanel ?? [];
+        const quickPanel = analysis.expertPanel ?? [];
+        const modeForSave = isRefresh ? selectedMode : mode;
+        const panelForSave = modeForSave === "custom" ? customIncludedPanel : quickPanel;
 
         setAiAnalysis(analysis);
-        setExpertPanel(panel);
-        setSelectedMode(mode);
+        setQuickStartPanel(quickPanel);
+        setQuickExcludedRoleIds([]);
+        if (!isRefresh) {
+          setSelectedMode(mode);
+        }
 
         const savedConfigurationId = await persistConfiguration({
           template: seedTemplate,
           draft: false,
           analysis,
-          panel,
-          mode,
+          panel: panelForSave,
+          mode: modeForSave,
         });
 
         setConfigurationId(savedConfigurationId);
@@ -248,7 +335,7 @@ const Configure = () => {
         setIsAnalyzing(false);
       }
     },
-    [analyzeChallenge, persistConfiguration, toast]
+    [analyzeChallenge, customIncludedPanel, persistConfiguration, selectedMode, toast]
   );
 
   const loadConfiguration = useCallback(async () => {
@@ -282,12 +369,24 @@ const Configure = () => {
 
       if (payload.configuration) {
         const configuration = payload.configuration;
-        const panel = asExpertPanel(configuration.expert_panel);
-        const analysis = extractAnalysis(configuration, panel);
+        const persistedPanel = asExpertPanel(configuration.expert_panel);
+        const persistedMode = configuration.selected_mode ?? "quick-start";
+        const analysis = extractAnalysis(configuration, persistedPanel);
+        const quickPanelFromAnalysis = analysis?.expertPanel ?? [];
 
         setConfigurationId(configuration.id);
-        setSelectedMode(configuration.selected_mode ?? "quick-start");
-        setExpertPanel(panel);
+        setSelectedMode(persistedMode);
+        if (persistedMode === "custom") {
+          setCustomExpertPanel(persistedPanel);
+          setCustomExcludedRoleIds([]);
+          setQuickStartPanel(quickPanelFromAnalysis);
+          setQuickExcludedRoleIds([]);
+        } else {
+          setQuickStartPanel(persistedPanel);
+          setQuickExcludedRoleIds([]);
+          setCustomExpertPanel([]);
+          setCustomExcludedRoleIds([]);
+        }
         setAiAnalysis(analysis);
         setIsDirty(false);
         return;
@@ -295,7 +394,11 @@ const Configure = () => {
 
       setConfigurationId(null);
       setAiAnalysis(null);
-      setExpertPanel([]);
+      setSelectedMode("quick-start");
+      setQuickStartPanel([]);
+      setCustomExpertPanel([]);
+      setQuickExcludedRoleIds([]);
+      setCustomExcludedRoleIds([]);
 
       if (!payload.templateMeta.canEdit) {
         setLoadError(
@@ -345,11 +448,77 @@ const Configure = () => {
 
   const handleRoleSave = (nextRole: ExpertRole) => {
     if (!canEdit) return;
-    setExpertPanel((previous) =>
-      previous.map((role) => (role.id === nextRole.id ? nextRole : role))
-    );
+    const targetMode = customizingMode ?? selectedMode;
+    const applyRoleToPanel = (previous: ExpertRole[]) => {
+      const existingIndex = previous.findIndex((role) => role.id === nextRole.id);
+      if (existingIndex >= 0) {
+        return previous.map((role) => (role.id === nextRole.id ? nextRole : role));
+      }
+      return [...previous, nextRole];
+    };
+    if (targetMode === "custom") {
+      setCustomExpertPanel(applyRoleToPanel);
+    } else {
+      setQuickStartPanel(applyRoleToPanel);
+    }
     setIsDirty(true);
+    setPendingCustomRole(null);
+    setCustomizingMode(null);
   };
+
+  const handleAddUserDefinedExpert = useCallback(() => {
+    if (!canEdit) {
+      toast({
+        title: "Read-only configuration",
+        description: "Only the template owner can customize roles.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const draftRole = createUserDefinedExpertRole({ panel: customExpertPanel });
+    setPendingCustomRole(draftRole);
+    setCustomizingMode("custom");
+    setCustomizingRoleId(draftRole.id);
+  }, [canEdit, customExpertPanel, toast]);
+
+  const handleToggleRoleIncluded = useCallback(
+    (roleId: string) => {
+      if (!canEdit) {
+        toast({
+          title: "Read-only configuration",
+          description: "Only the template owner can change included experts.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const isCurrentlyExcluded = activeExcludedRoleIdSet.has(roleId);
+      if (!isCurrentlyExcluded && includedExpertCount <= 2) {
+        toast({
+          title: "Minimum 2 experts required",
+          description: "Keep at least 2 experts included for conference runs.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const applyToggle = (previous: string[]) => {
+        if (isCurrentlyExcluded) {
+          return previous.filter((id) => id !== roleId);
+        }
+        return previous.includes(roleId) ? previous : [...previous, roleId];
+      };
+
+      if (isCustomMode) {
+        setCustomExcludedRoleIds(applyToggle);
+      } else {
+        setQuickExcludedRoleIds(applyToggle);
+      }
+      setIsDirty(true);
+    },
+    [activeExcludedRoleIdSet, canEdit, includedExpertCount, isCustomMode, toast]
+  );
 
   const handleSaveDraft = useCallback(async () => {
     if (!templateData || !canEdit) {
@@ -366,7 +535,7 @@ const Configure = () => {
         template: templateData,
         draft: true,
         analysis: aiAnalysis,
-        panel: expertPanel,
+        panel: includedPanel,
         mode: selectedMode,
       });
       setConfigurationId(nextConfigurationId);
@@ -386,7 +555,7 @@ const Configure = () => {
   }, [
     aiAnalysis,
     canEdit,
-    expertPanel,
+    includedPanel,
     persistConfiguration,
     selectedMode,
     templateData,
@@ -397,6 +566,16 @@ const Configure = () => {
     if (!templateData) return;
     setIsLaunching(true);
     try {
+      if (includedExpertCount < 2) {
+        throw new Error("At least 2 experts must remain included before launching.");
+      }
+
+      if (canEdit && selectedMode === "custom" && userDefinedExpertCount < 2) {
+        throw new Error(
+          "Custom Setup requires at least 2 user-defined experts. Add more experts in Customize."
+        );
+      }
+
       let nextConfigurationId = configurationId;
 
       if (!canEdit && !nextConfigurationId) {
@@ -408,7 +587,7 @@ const Configure = () => {
           template: templateData,
           draft: false,
           analysis: aiAnalysis,
-          panel: expertPanel,
+          panel: includedPanel,
           mode: selectedMode,
         });
         setConfigurationId(nextConfigurationId);
@@ -418,9 +597,6 @@ const Configure = () => {
       const params = new URLSearchParams();
       params.set("config_id", nextConfigurationId!);
       params.set("configId", nextConfigurationId!);
-      params.set("title", templateData.problemStatement);
-      params.set("script", templateData.script || "");
-      params.set("prompt_id", templateData.id);
       navigate(`/conference?${params.toString()}`);
     } catch (error) {
       const message =
@@ -437,13 +613,15 @@ const Configure = () => {
     aiAnalysis,
     canEdit,
     configurationId,
-    expertPanel,
+    includedExpertCount,
+    includedPanel,
     isDirty,
     navigate,
     persistConfiguration,
     selectedMode,
     templateData,
     toast,
+    userDefinedExpertCount,
   ]);
 
   return (
@@ -452,7 +630,7 @@ const Configure = () => {
         sidebar={
           <ConferenceBlueprint
             templateData={templateData}
-            expertPanel={expertPanel}
+            expertPanel={includedPanel}
             estimatedCost={estimatedCost}
             selectedMode={selectedMode}
             strategyLabel={strategyLabel}
@@ -493,7 +671,7 @@ const Configure = () => {
                 void seedAndPersistConfiguration({
                   seedTemplate: templateData,
                   isRefresh: true,
-                  mode: selectedMode,
+                  mode: "quick-start",
                 });
               }}
               disabled={isAnalyzing || !templateData || !canEdit}
@@ -516,6 +694,15 @@ const Configure = () => {
           onModeChange={(mode) => {
             setSelectedMode(mode);
             if (canEdit) setIsDirty(true);
+            if (mode === "custom" && canEdit && userDefinedExpertCount < 2) {
+              toast({
+                title: "Custom Setup requires at least 2 custom experts",
+                description: "Add user-defined experts one at a time using the Customize panel.",
+              });
+            }
+            setCustomizingRoleId(null);
+            setPendingCustomRole(null);
+            setCustomizingMode(null);
           }}
         />
 
@@ -524,8 +711,41 @@ const Configure = () => {
         {!isAnalyzing && aiAnalysis ? (
           <>
             <AIAnalysisResult analysis={aiAnalysis} />
+            {isCustomMode ? (
+              <section className="space-y-3 rounded-xl border border-indigo-500/35 bg-indigo-500/10 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-indigo-100">Custom Setup Builder</p>
+                    <p className="text-xs text-indigo-200/90">
+                      Add user-defined experts one at a time and tune them in the power customizer panel.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={handleAddUserDefinedExpert}
+                    disabled={!canEdit}
+                    className="bg-blue-600 text-white hover:bg-blue-500"
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add Expert
+                  </Button>
+                </div>
+                {userDefinedExpertCount < 2 ? (
+                  <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                    Warning: create at least 2 user-defined experts in Custom Setup before launching.
+                    Current custom experts: {userDefinedExpertCount}/2.
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-emerald-400/35 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                    Custom Setup requirement met: {userDefinedExpertCount} user-defined experts created.
+                  </div>
+                )}
+              </section>
+            ) : null}
             <ExpertPanelDisplay
-              panel={expertPanel}
+              panel={activeModePanel}
+              excludedRoleIds={activeExcludedRoleIds}
+              onToggleRoleIncluded={handleToggleRoleIncluded}
               onRoleCustomize={(roleId) => {
                 if (!canEdit) {
                   toast({
@@ -535,7 +755,9 @@ const Configure = () => {
                   });
                   return;
                 }
+                setCustomizingMode(selectedMode);
                 setCustomizingRoleId(roleId);
+                setPendingCustomRole(null);
               }}
             />
           </>
@@ -552,7 +774,11 @@ const Configure = () => {
         role={customizingRole}
         open={Boolean(customizingRole)}
         onOpenChange={(open) => {
-          if (!open) setCustomizingRoleId(null);
+          if (!open) {
+            setCustomizingRoleId(null);
+            setPendingCustomRole(null);
+            setCustomizingMode(null);
+          }
         }}
         onSave={handleRoleSave}
       />

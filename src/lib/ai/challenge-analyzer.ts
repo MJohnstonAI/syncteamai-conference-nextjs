@@ -55,9 +55,168 @@ const analysisSchema = z.object({
 const preferredModelForArchetype: Record<ExpertRole["behavior"]["archetype"], string> = {
   analytical: "google/gemini-2.5-pro",
   strategic: "anthropic/claude-sonnet-4",
-  adversarial: "openai/o1-mini",
-  integrative: "openai/gpt-4o",
+  adversarial: "anthropic/claude-haiku-3.5",
+  integrative: "google/gemini-2.5-flash",
   creative: "anthropic/claude-sonnet-4.5",
+};
+
+const modelCandidatesForArchetype: Record<
+  ExpertRole["behavior"]["archetype"],
+  string[]
+> = {
+  analytical: [
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+    "anthropic/claude-haiku-3.5",
+    "meta/llama-3.3-70b-instruct",
+    "openai/gpt-4o-mini",
+  ],
+  strategic: [
+    "anthropic/claude-sonnet-4",
+    "anthropic/claude-sonnet-4.5",
+    "google/gemini-2.5-pro",
+    "openai/gpt-4o-mini",
+    "meta/llama-3.3-70b-instruct",
+  ],
+  adversarial: [
+    "anthropic/claude-haiku-3.5",
+    "google/gemini-2.5-flash",
+    "meta/llama-3.3-70b-instruct",
+    "openai/gpt-4o-mini",
+  ],
+  integrative: [
+    "google/gemini-2.5-flash",
+    "anthropic/claude-sonnet-4",
+    "anthropic/claude-haiku-3.5",
+    "openai/gpt-4o-mini",
+    "meta/llama-3.3-70b-instruct",
+  ],
+  creative: [
+    "anthropic/claude-sonnet-4.5",
+    "google/gemini-2.5-pro",
+    "anthropic/claude-haiku-3.5",
+    "openai/gpt-4o-mini",
+    "meta/llama-3.3-70b-instruct",
+  ],
+};
+
+const MIN_ROLES_FOR_RUNNABLE_PANEL = 3;
+const MAX_ALLOWED_MODELS_IN_PROMPT = 80;
+const roleOverridePattern = /\*\*\*([^*]{1,120}?)\*\*\*/g;
+
+const overrideBehaviorConfig: Record<
+  ExpertRole["behavior"]["archetype"],
+  {
+    temperature: number;
+    responseLength: ExpertRole["behavior"]["responseLength"];
+    interactionStyle: string[];
+    focusAreas: string[];
+  }
+> = {
+  analytical: {
+    temperature: 0.35,
+    responseLength: "medium",
+    interactionStyle: ["uses evidence", "clarifies assumptions", "tests consistency"],
+    focusAreas: ["evidence quality", "assumption checks", "logical consistency"],
+  },
+  strategic: {
+    temperature: 0.5,
+    responseLength: "comprehensive",
+    interactionStyle: ["aligns to outcomes", "prioritizes trade-offs", "keeps decision focus"],
+    focusAreas: ["strategy alignment", "trade-off framing", "decision quality"],
+  },
+  adversarial: {
+    temperature: 0.45,
+    responseLength: "medium",
+    interactionStyle: ["challenges weak claims", "surfaces risks", "forces mitigations"],
+    focusAreas: ["counterarguments", "risk exposure", "failure modes"],
+  },
+  integrative: {
+    temperature: 0.5,
+    responseLength: "medium",
+    interactionStyle: ["connects perspectives", "resolves conflicts", "summarizes consensus"],
+    focusAreas: ["synthesis", "consensus points", "decision convergence"],
+  },
+  creative: {
+    temperature: 0.75,
+    responseLength: "medium",
+    interactionStyle: ["proposes alternatives", "reframes constraints", "explores upside"],
+    focusAreas: ["novel options", "scenario exploration", "differentiation"],
+  },
+};
+
+const toRoleKey = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+const toRoleSlug = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48);
+
+const toTitleCase = (value: string): string =>
+  value
+    .replace(/[^a-z0-9\s-]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1).toLowerCase()}`)
+    .join(" ");
+
+const sanitizeOverrideLabel = (value: string): string =>
+  value
+    .replace(/\s+/g, " ")
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "")
+    .trim();
+
+const inferOverrideArchetype = (label: string): ExpertRole["behavior"]["archetype"] => {
+  const normalized = label.toLowerCase();
+
+  if (
+    /(sceptic|skeptic|contrarian|critic|devil|dissent|challenger|red team|risk)/.test(normalized)
+  ) {
+    return "adversarial";
+  }
+  if (/(synthesi|integrat|moderat|facilitat|mediator|coordinator|bridge)/.test(normalized)) {
+    return "integrative";
+  }
+  if (/(creative|innovation|vision|imagin|brainstorm|ideation|invent)/.test(normalized)) {
+    return "creative";
+  }
+  if (/(strategy|executive|cto|ceo|founder|planner|leadership|operator)/.test(normalized)) {
+    return "strategic";
+  }
+  if (/(analyst|research|scient|data|engineer|evidence|quant)/.test(normalized)) {
+    return "analytical";
+  }
+
+  return "analytical";
+};
+
+const extractRoleOverrideLabels = (templateData: TemplateData): string[] => {
+  const source = [
+    templateData.problemStatement,
+    templateData.script,
+    templateData.description ?? "",
+  ].join("\n");
+
+  const labels: string[] = [];
+  const seen = new Set<string>();
+
+  for (const match of source.matchAll(roleOverridePattern)) {
+    const rawLabel = match[1] ?? "";
+    const label = sanitizeOverrideLabel(rawLabel);
+    if (!label) continue;
+    const key = toRoleKey(label);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label.slice(0, 120));
+    if (labels.length >= 7) break;
+  }
+
+  return labels;
 };
 
 const extractJsonPayload = (value: string): string | null => {
@@ -181,20 +340,91 @@ const clampTemperature = (value: number): number => {
   return Math.max(0, Math.min(1, value));
 };
 
-const normalizeRoleModel = (role: ExpertRole): ExpertRole => {
-  const chosenModelId = role.model.modelId || preferredModelForArchetype[role.behavior.archetype];
-  const model = getModelById(chosenModelId);
+const toEligibleModelSet = (
+  allowedModelIds?: string[] | null
+): Set<string> | null => {
+  if (!allowedModelIds || allowedModelIds.length === 0) {
+    return null;
+  }
+  const cleaned = allowedModelIds
+    .map((modelId) => modelId.trim())
+    .filter((modelId) => modelId.length > 0);
+  if (cleaned.length === 0) {
+    return null;
+  }
+  return new Set(cleaned);
+};
 
-  if (!model) {
-    const fallbackModelId = preferredModelForArchetype[role.behavior.archetype];
-    const fallbackModel = getModelById(fallbackModelId);
-    if (!fallbackModel) return role;
+const isModelAllowed = (modelId: string, allowedSet: Set<string> | null): boolean =>
+  !allowedSet || allowedSet.size === 0 || allowedSet.has(modelId);
+
+const toProviderFromModelId = (modelId: string): string =>
+  modelId.split("/")[0]?.trim() || "openrouter";
+
+const toDisplayNameFromModelId = (modelId: string): string => {
+  const suffix = modelId.split("/")[1] ?? modelId;
+  return suffix
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+};
+
+const chooseFallbackModelIdForArchetype = ({
+  archetype,
+  allowedSet,
+}: {
+  archetype: ExpertRole["behavior"]["archetype"];
+  allowedSet: Set<string> | null;
+}): string | null => {
+  const archetypeCandidates = modelCandidatesForArchetype[archetype] ?? [];
+  for (const candidate of archetypeCandidates) {
+    if (isModelAllowed(candidate, allowedSet)) {
+      return candidate;
+    }
+  }
+
+  if (allowedSet && allowedSet.size > 0) {
+    for (const candidate of allowedSet) {
+      if (getModelById(candidate)) {
+        return candidate;
+      }
+    }
+    return allowedSet.values().next().value ?? null;
+  }
+
+  return preferredModelForArchetype[archetype] ?? null;
+};
+
+const normalizeRoleModel = ({
+  role,
+  allowedModelIds,
+}: {
+  role: ExpertRole;
+  allowedModelIds?: string[] | null;
+}): ExpertRole => {
+  const allowedSet = toEligibleModelSet(allowedModelIds);
+  const requestedModelId = role.model.modelId?.trim() || "";
+  const fallbackModelId = chooseFallbackModelIdForArchetype({
+    archetype: role.behavior.archetype,
+    allowedSet,
+  });
+
+  const chosenModelId =
+    requestedModelId && isModelAllowed(requestedModelId, allowedSet)
+      ? requestedModelId
+      : fallbackModelId || requestedModelId || preferredModelForArchetype[role.behavior.archetype];
+
+  const knownModel = getModelById(chosenModelId);
+  if (knownModel) {
     return {
       ...role,
       model: {
-        provider: fallbackModel.provider,
-        modelId: fallbackModel.id,
-        displayName: fallbackModel.name,
+        provider: knownModel.provider,
+        modelId: knownModel.id,
+        displayName: knownModel.name,
       },
     };
   }
@@ -202,11 +432,155 @@ const normalizeRoleModel = (role: ExpertRole): ExpertRole => {
   return {
     ...role,
     model: {
-      provider: model.provider,
-      modelId: model.id,
-      displayName: model.name,
+      provider: toProviderFromModelId(chosenModelId),
+      modelId: chosenModelId,
+      displayName: toDisplayNameFromModelId(chosenModelId),
     },
   };
+};
+
+const createRoleOverrides = ({
+  templateData,
+  allowedModelIds,
+}: {
+  templateData: TemplateData;
+  allowedModelIds?: string[] | null;
+}): ExpertRole[] => {
+  const overrideLabels = extractRoleOverrideLabels(templateData);
+
+  return overrideLabels.map((label, index) => {
+    const archetype = inferOverrideArchetype(label);
+    const behaviorConfig = overrideBehaviorConfig[archetype];
+    const behaviorLabel = label.toLowerCase();
+    const normalizedTitle = toTitleCase(label) || `Participant ${index + 1}`;
+    const role: ExpertRole = {
+      id: `role_override_${toRoleSlug(label) || index + 1}`,
+      title: normalizedTitle.slice(0, 120),
+      category: "Debate Participant",
+      icon: "users",
+      description: `Generic debate participant with a ${behaviorLabel} perspective.`,
+      focusAreas: [`${behaviorLabel} perspective`, ...behaviorConfig.focusAreas].slice(0, 8),
+      behavior: {
+        archetype,
+        temperature: behaviorConfig.temperature,
+        responseLength: behaviorConfig.responseLength,
+        interactionStyle: [
+          `adopts a ${behaviorLabel} stance`,
+          ...behaviorConfig.interactionStyle,
+        ].slice(0, 6),
+      },
+      model: {
+        provider: "openrouter",
+        modelId: preferredModelForArchetype[archetype],
+        displayName: "OpenRouter Model",
+      },
+      whyIncluded: `Explicit override marker from template: ***${label}***.`,
+      priority: index === 0 ? "critical" : "recommended",
+    };
+    return normalizeRoleModel({ role, allowedModelIds });
+  });
+};
+
+const usesExclusiveOverrideMode = (overrideCount: number): boolean =>
+  overrideCount >= MIN_ROLES_FOR_RUNNABLE_PANEL;
+
+const mergePanelWithOverrideRoles = ({
+  templateData,
+  panel,
+  maxRoles,
+  allowedModelIds,
+}: {
+  templateData: TemplateData;
+  panel: ExpertRole[];
+  maxRoles: number;
+  allowedModelIds?: string[] | null;
+}): ExpertRole[] => {
+  const overrideRoles = createRoleOverrides({ templateData, allowedModelIds });
+  if (usesExclusiveOverrideMode(overrideRoles.length)) {
+    return overrideRoles.slice(0, maxRoles);
+  }
+
+  const merged: ExpertRole[] = [];
+  const seen = new Set<string>();
+
+  const pushIfUnique = (role: ExpertRole) => {
+    const roleKey = toRoleKey(role.title) || toRoleKey(role.id);
+    if (!roleKey || seen.has(roleKey)) return;
+    seen.add(roleKey);
+    merged.push(role);
+  };
+
+  for (const role of overrideRoles) {
+    pushIfUnique(role);
+  }
+  for (const role of panel) {
+    pushIfUnique(normalizeRoleModel({ role, allowedModelIds }));
+  }
+
+  if (overrideRoles.length > 0 && merged.length < MIN_ROLES_FOR_RUNNABLE_PANEL) {
+    const fallbackPanel = createFallbackPanel(templateData, allowedModelIds);
+    for (const role of fallbackPanel) {
+      pushIfUnique(role);
+      if (merged.length >= MIN_ROLES_FOR_RUNNABLE_PANEL) break;
+    }
+  }
+
+  return merged.slice(0, maxRoles);
+};
+
+export const applyTemplateRoleOverridesToPanel = ({
+  templateData,
+  panel,
+  maxRoles = 12,
+  allowedModelIds,
+}: {
+  templateData: TemplateData;
+  panel: ExpertRole[];
+  maxRoles?: number;
+  allowedModelIds?: string[] | null;
+}): ExpertRole[] =>
+  mergePanelWithOverrideRoles({
+    templateData,
+    panel,
+    maxRoles: Math.max(1, maxRoles),
+    allowedModelIds,
+  });
+
+const mergeExpertPanelWithOverrides = ({
+  templateData,
+  panel,
+  fallbackPanel,
+  allowedModelIds,
+}: {
+  templateData: TemplateData;
+  panel: ExpertRole[];
+  fallbackPanel: ExpertRole[];
+  allowedModelIds?: string[] | null;
+}): ExpertRole[] => {
+  const overrideCount = extractRoleOverrideLabels(templateData).length;
+  const merged = applyTemplateRoleOverridesToPanel({
+    templateData,
+    panel,
+    maxRoles: 7,
+    allowedModelIds,
+  });
+  if (usesExclusiveOverrideMode(overrideCount)) {
+    return merged.slice(0, 7);
+  }
+
+  const seen = new Set(merged.map((role) => toRoleKey(role.title) || toRoleKey(role.id)));
+
+  if (merged.length < 4) {
+    for (const role of fallbackPanel) {
+      const roleKey = toRoleKey(role.title) || toRoleKey(role.id);
+      if (!roleKey || seen.has(roleKey)) continue;
+      seen.add(roleKey);
+      merged.push(role);
+      if (merged.length >= 4) break;
+    }
+  }
+
+  return merged.slice(0, 7);
 };
 
 const recommendedStrategyFor = (templateData: TemplateData): string => {
@@ -232,7 +606,10 @@ const complexityFor = (templateData: TemplateData): number => {
   return Math.max(3, Math.min(10, score));
 };
 
-const createFallbackPanel = (templateData: TemplateData): ExpertRole[] => {
+const createFallbackPanel = (
+  templateData: TemplateData,
+  allowedModelIds?: string[] | null
+): ExpertRole[] => {
   const strategyRole: ExpertRole = {
     id: "role_cto",
     title: "Strategy Lead",
@@ -370,13 +747,22 @@ const createFallbackPanel = (templateData: TemplateData): ExpertRole[] => {
       ? [strategyRole, architectureRole, riskRole, executionRole]
       : [strategyRole, architectureRole, riskRole, executionRole, financeRole, creativeRole];
 
-  return panel.map(normalizeRoleModel);
+  return panel.map((role) => normalizeRoleModel({ role, allowedModelIds }));
 };
 
-const buildHeuristicAnalysis = (templateData: TemplateData): ChallengeAnalysis => {
+const buildHeuristicAnalysis = (
+  templateData: TemplateData,
+  allowedModelIds?: string[] | null
+): ChallengeAnalysis => {
   const complexityScore = complexityFor(templateData);
   const recommendedStrategy = recommendedStrategyFor(templateData);
-  const expertPanel = createFallbackPanel(templateData);
+  const fallbackPanel = createFallbackPanel(templateData, allowedModelIds);
+  const expertPanel = mergeExpertPanelWithOverrides({
+    templateData,
+    panel: fallbackPanel,
+    fallbackPanel,
+    allowedModelIds,
+  });
   const estimatedCost = estimateConferenceCost(expertPanel);
 
   return {
@@ -406,8 +792,10 @@ const buildHeuristicAnalysis = (templateData: TemplateData): ChallengeAnalysis =
 
 const normalizeAnalysis = (
   raw: z.infer<typeof analysisSchema>,
-  templateData: TemplateData
+  templateData: TemplateData,
+  allowedModelIds?: string[] | null
 ): ChallengeAnalysis => {
+  const fallbackPanel = createFallbackPanel(templateData, allowedModelIds);
   let panel = raw.expertPanel.map((role, index) => {
     const normalizedRole: ExpertRole = {
       id: role.id || `role_${index + 1}`,
@@ -430,15 +818,15 @@ const normalizeAnalysis = (
       whyIncluded: role.whyIncluded ?? "Included for broad coverage.",
       priority: role.priority ?? "recommended",
     };
-    return normalizeRoleModel(normalizedRole);
+    return normalizeRoleModel({ role: normalizedRole, allowedModelIds });
   });
 
-  if (panel.length < 4) {
-    panel = createFallbackPanel(templateData).slice(0, 4);
-  }
-  if (panel.length > 7) {
-    panel = panel.slice(0, 7);
-  }
+  panel = mergeExpertPanelWithOverrides({
+    templateData,
+    panel,
+    fallbackPanel,
+    allowedModelIds,
+  });
 
   return {
     problemType: raw.problemType,
@@ -462,7 +850,61 @@ const normalizeAnalysis = (
   };
 };
 
-const buildAnalysisPrompt = (templateData: TemplateData): string => `
+const buildAllowedModelBlock = (allowedModelIds?: string[] | null): string => {
+  if (!allowedModelIds || allowedModelIds.length === 0) {
+    return "";
+  }
+
+  const uniqueModelIds = Array.from(
+    new Set(
+      allowedModelIds
+        .map((modelId) => modelId.trim())
+        .filter((modelId) => modelId.length > 0)
+    )
+  );
+
+  if (uniqueModelIds.length === 0) {
+    return "";
+  }
+
+  const listedModelIds = uniqueModelIds.slice(0, MAX_ALLOWED_MODELS_IN_PROMPT);
+  const remainingCount = uniqueModelIds.length - listedModelIds.length;
+
+  return `
+ALLOWED OPENROUTER MODEL IDS:
+${listedModelIds.map((modelId) => `- ${modelId}`).join("\n")}
+${remainingCount > 0 ? `- ...and ${remainingCount} more allowed models not shown` : ""}
+Only use model.modelId values from this allowed list.
+`;
+};
+
+const buildAnalysisPrompt = (
+  templateData: TemplateData,
+  allowedModelIds?: string[] | null
+): string => {
+  const overrideLabels = extractRoleOverrideLabels(templateData);
+  const overrideCount = overrideLabels.length;
+  const hasOverrides = overrideLabels.length > 0;
+  const requiresSupplementalRoles =
+    hasOverrides && !usesExclusiveOverrideMode(overrideCount);
+  const allowedModelBlock = buildAllowedModelBlock(allowedModelIds);
+  const roleOverrideBlock =
+    hasOverrides
+      ? `
+EXPLICIT ROLE OVERRIDES:
+${overrideLabels.map((label) => `- ***${label}***`).join("\n")}
+Use each override exactly once in expertPanel.
+${requiresSupplementalRoles
+  ? `Add supplemental AI-selected roles so expertPanel has at least ${MIN_ROLES_FOR_RUNNABLE_PANEL} total roles.`
+  : `Do not add any extra roles beyond this override list.
+Set expertPanel length to exactly ${overrideLabels.length}.`}
+For each override role:
+- set "category" to "Debate Participant"
+- keep the marker meaning in title and behavior (example: sceptic -> adversarial)
+`
+      : "";
+
+  return `
 You configure expert AI panels for multi-agent conferences.
 Return JSON only.
 
@@ -475,12 +917,18 @@ TEMPLATE CONTEXT:
 - Stakes Level: ${templateData.context.stakesLevel}
 - Timeline: ${templateData.context.timeline}
 - Budget: ${templateData.context.budget}
+${roleOverrideBlock}
+${allowedModelBlock}
 
 REQUIREMENTS:
 1. Classify the problem type.
 2. Set complexity score (1-10) with rationale.
 3. Recommend strategy name and reason.
-4. Propose 4-7 roles with explicit value for this challenge.
+4. ${hasOverrides
+  ? requiresSupplementalRoles
+    ? `Use all explicit override roles and add supplemental roles until there are at least ${MIN_ROLES_FOR_RUNNABLE_PANEL} roles.`
+    : "Use only the explicit override roles."
+  : "Propose 4-7 roles with explicit value for this challenge."}
 5. Include behavior archetype, temperature (0-1), response length, and interaction style.
 6. Assign practical OpenRouter model IDs (avoid placeholders).
 7. Provide estimated duration (minutes) and estimated cost range (USD).
@@ -527,6 +975,7 @@ Return this JSON shape:
   "estimatedCost": { "min": 2.5, "max": 6.0 }
 }
 `;
+};
 
 const buildJsonRepairPrompt = (rawOutput: string): string => `
 Fix this output into valid JSON that matches the required schema exactly.
@@ -539,11 +988,13 @@ ${rawOutput}
 export const analyzeChallengeWithAI = async ({
   templateData,
   apiKey,
+  allowedModelIds,
 }: {
   templateData: TemplateData;
   apiKey: string | null;
+  allowedModelIds?: string[] | null;
 }): Promise<ChallengeAnalysis> => {
-  const fallback = buildHeuristicAnalysis(templateData);
+  const fallback = buildHeuristicAnalysis(templateData, allowedModelIds);
   if (!apiKey) return fallback;
 
   const analyzerModels = [
@@ -560,7 +1011,7 @@ export const analyzeChallengeWithAI = async ({
       },
       {
         role: "user" as const,
-        content: buildAnalysisPrompt(templateData),
+        content: buildAnalysisPrompt(templateData, allowedModelIds),
       },
     ];
 
@@ -580,7 +1031,7 @@ export const analyzeChallengeWithAI = async ({
 
     const validated = parseAnalysisPayload(aiResponse.content);
     if (validated) {
-      return normalizeAnalysis(validated, templateData);
+      return normalizeAnalysis(validated, templateData, allowedModelIds);
     }
 
     const repairResponse = await callOpenRouter({
@@ -609,7 +1060,7 @@ export const analyzeChallengeWithAI = async ({
 
     const repaired = parseAnalysisPayload(repairResponse.content);
     if (repaired) {
-      return normalizeAnalysis(repaired, templateData);
+      return normalizeAnalysis(repaired, templateData, allowedModelIds);
     }
 
     return null;

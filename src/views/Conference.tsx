@@ -4,7 +4,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { ModelSelectionDropdown } from "@/components/ModelSelectionDropdown";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { RootPostCard } from "@/components/thread/RootPostCard";
 import { ThreadList } from "@/components/thread/ThreadList";
@@ -15,6 +14,7 @@ import { ThreadEmptyState } from "@/components/thread/ThreadEmptyState";
 import { AgentMiniCard } from "@/components/thread/AgentMiniCard";
 import { RoundPill } from "@/components/thread/RoundPill";
 import { ActionRail } from "@/components/ActionRail";
+import ExpertCustomizerSheet from "@/components/conference/ExpertCustomizerSheet";
 import { useAuth } from "@/hooks/useAuth";
 import { useCreateConversation } from "@/hooks/useConversations";
 import {
@@ -28,7 +28,9 @@ import { useUserRole } from "@/hooks/useUserRole";
 import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
 import { authedFetch } from "@/lib/auth-token";
-import { getAgentMeta } from "@/lib/agents";
+import { getAgentMeta, resolveModelAvatarImage } from "@/lib/agents";
+import { DEFAULT_AVATAR_ORDER, getModelById } from "@/data/openRouterModels";
+import type { ExpertRole } from "@/lib/configuration/types";
 import {
   buildConferencePhaseSystemPrompt,
   getConferencePhaseForRoundNumber,
@@ -37,13 +39,22 @@ import {
   type ConferencePhase,
 } from "@/lib/conference/phases";
 import {
-  isPureRepetition,
   normalizeAgentOutput,
   parseDecisionBoardFromMessage,
   type DecisionBoard,
 } from "@/lib/conference/quality";
 import type { ThreadSort } from "@/lib/thread/types";
-import { ArrowRight, CalendarDays, ChevronRight, Clock3, Key, Loader2, Sparkles, Square } from "lucide-react";
+import {
+  ArrowRight,
+  CalendarDays,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Clock3,
+  Key,
+  Loader2,
+  Square,
+} from "lucide-react";
 
 type TranscriptMessage = {
   role: "user" | "assistant" | "system";
@@ -85,6 +96,81 @@ type ConfigurationSeed = {
   title: string;
   script: string;
   promptScriptId: string | null;
+  expertPanel: ExpertRole[];
+};
+
+type ConfiguredAgent = {
+  avatarId: string;
+  panelIndex: number;
+  modelId: string;
+  roleTitle: string;
+  modelLabel: string;
+  avatarImage: string;
+};
+
+const MAX_REPLY_CONTENT_CHARS = 120_000;
+const MAX_TRANSCRIPT_MESSAGES = 180;
+const MAX_TRANSCRIPT_MESSAGE_CHARS = 8_000;
+const MIN_ACTIVE_AGENTS = 2;
+
+const buildFallbackRoleFromConfiguredAgent = (agent: ConfiguredAgent): ExpertRole => ({
+  id: `role_${agent.avatarId}`,
+  title: agent.roleTitle,
+  category: "Debate Participant",
+  icon: "users",
+  description: `${agent.roleTitle} contributes to the debate with focused perspective.`,
+  focusAreas: [agent.roleTitle.toLowerCase()],
+  behavior: {
+    archetype: "analytical",
+    temperature: 0.5,
+    responseLength: "medium",
+    interactionStyle: ["contributes evidence", "responds to prior arguments"],
+  },
+  model: {
+    provider: agent.modelId.split("/")[0] ?? "openrouter",
+    modelId: agent.modelId,
+    displayName: agent.modelLabel,
+  },
+  whyIncluded: "Fallback role generated from active conference agent mapping.",
+  priority: "recommended",
+});
+
+const cloneExpertRole = (role: ExpertRole): ExpertRole => ({
+  ...role,
+  focusAreas: [...role.focusAreas],
+  behavior: {
+    ...role.behavior,
+    interactionStyle: [...role.behavior.interactionStyle],
+  },
+  model: { ...role.model },
+});
+
+const buildRoleCustomizationPrompt = (role: ExpertRole | null): string => {
+  if (!role) return "";
+
+  const focusAreas = role.focusAreas
+    .map((area) => area.trim())
+    .filter((area) => area.length > 0)
+    .slice(0, 8);
+  const interactionStyle = role.behavior.interactionStyle
+    .map((style) => style.trim())
+    .filter((style) => style.length > 0)
+    .slice(0, 8);
+
+  const lines = [
+    `Expert profile: ${role.title}.`,
+    `Category: ${role.category}.`,
+    `Role objective: ${role.description}`,
+    `Behavior archetype: ${role.behavior.archetype}.`,
+    `Response length preference: ${role.behavior.responseLength}.`,
+    `Creativity target (temperature): ${role.behavior.temperature.toFixed(2)}.`,
+    focusAreas.length > 0 ? `Focus areas: ${focusAreas.join(", ")}.` : "",
+    interactionStyle.length > 0 ? `Interaction style: ${interactionStyle.join("; ")}.` : "",
+  ]
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  return lines.join("\n");
 };
 
 const Conference = () => {
@@ -93,14 +179,7 @@ const Conference = () => {
   const { user, loading } = useAuth();
   const { toast } = useToast();
   const { data: userRole } = useUserRole();
-  const {
-    hasConfiguredOpenRouterKey,
-    selectedModels,
-    activeModels,
-    avatarOrder,
-    getModelForAvatar,
-    setSelectedModels,
-  } = useBYOK();
+  const { hasConfiguredOpenRouterKey } = useBYOK();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<ThreadSort>("new");
@@ -122,9 +201,13 @@ const Conference = () => {
   const [checkpointBetweenPhases, setCheckpointBetweenPhases] = useState(false);
   const [pendingPhaseRun, setPendingPhaseRun] = useState<PendingPhaseRun | null>(null);
   const [queuedHumanReplies, setQueuedHumanReplies] = useState<QueuedHumanReply[]>([]);
-  const [modelSelectionOpenSignal, setModelSelectionOpenSignal] = useState(0);
   const [resolvedConfigurationSeed, setResolvedConfigurationSeed] = useState<ConfigurationSeed | null>(null);
   const [isConfigurationSeedLoading, setIsConfigurationSeedLoading] = useState(false);
+  const [agentTurnOrder, setAgentTurnOrder] = useState<string[]>([]);
+  const [disabledAgentIds, setDisabledAgentIds] = useState<string[]>([]);
+  const [isExpertCustomizerOpen, setIsExpertCustomizerOpen] = useState(false);
+  const [customizingAvatarId, setCustomizingAvatarId] = useState<string | null>(null);
+  const [customizingRoleDraft, setCustomizingRoleDraft] = useState<ExpertRole | null>(null);
 
   const hasCreatedConversation = useRef(false);
   const generationAbortRef = useRef<AbortController | null>(null);
@@ -141,14 +224,20 @@ const Conference = () => {
   const queryTitle = searchParams.get("title");
   const queryScript = searchParams.get("script");
   const queryPromptScriptId = searchParams.get("prompt_id");
-  const title = queryTitle || resolvedConfigurationSeed?.title || "Conference";
-  const script = queryScript || resolvedConfigurationSeed?.script || "";
-  const promptScriptId =
-    queryPromptScriptId || resolvedConfigurationSeed?.promptScriptId || null;
+  const hasConfigurationSeed = Boolean(resolvedConfigurationSeed?.title);
+  const title = configurationId
+    ? resolvedConfigurationSeed?.title || queryTitle || "Conference"
+    : queryTitle || resolvedConfigurationSeed?.title || "Conference";
+  const script = configurationId
+    ? resolvedConfigurationSeed?.script || queryScript || ""
+    : queryScript || resolvedConfigurationSeed?.script || "";
+  const promptScriptId = configurationId
+    ? resolvedConfigurationSeed?.promptScriptId || queryPromptScriptId || null
+    : queryPromptScriptId || resolvedConfigurationSeed?.promptScriptId || null;
   const linkedMessageId = searchParams.get("msg");
   const canAutoCreateConversation =
     !isConfigurationSeedLoading &&
-    (!configurationId || Boolean(queryTitle || resolvedConfigurationSeed?.title));
+    (!configurationId ? Boolean(queryTitle || resolvedConfigurationSeed?.title) : hasConfigurationSeed);
 
   const effectiveRole = userRole ?? "pending";
   const isAdminRole = effectiveRole === "admin";
@@ -191,7 +280,7 @@ const Conference = () => {
   useEffect(() => {
     let cancelled = false;
 
-    if (!configurationId || queryTitle || searchParams.get("conversation_id")) {
+    if (!configurationId) {
       setResolvedConfigurationSeed(null);
       setIsConfigurationSeedLoading(false);
       return () => {
@@ -219,6 +308,7 @@ const Conference = () => {
                 template_title?: string | null;
                 template_script?: string | null;
                 template_id?: string | null;
+                expert_panel?: unknown;
               };
               error?: string;
             }
@@ -234,11 +324,15 @@ const Conference = () => {
           payload.configuration.problem_statement ||
           payload.configuration.template_title ||
           "Conference";
+        const expertPanel = Array.isArray(payload.configuration.expert_panel)
+          ? (payload.configuration.expert_panel as ExpertRole[])
+          : [];
 
         setResolvedConfigurationSeed({
           title: resolvedTitle,
           script: payload.configuration.template_script || "",
           promptScriptId: payload.configuration.template_id || null,
+          expertPanel,
         });
       })
       .catch((error) => {
@@ -261,7 +355,7 @@ const Conference = () => {
     return () => {
       cancelled = true;
     };
-  }, [configurationId, loading, queryTitle, searchParams, toast, user]);
+  }, [configurationId, loading, toast, user]);
 
   useEffect(() => {
     if (hasCreatedConversation.current) return;
@@ -285,7 +379,13 @@ const Conference = () => {
         {
           onSuccess: (data) => {
             setConversationId(data.id);
-            navigate(`/conference?conversation_id=${data.id}`, { replace: true });
+            const params = new URLSearchParams();
+            params.set("conversation_id", data.id);
+            if (configurationId) {
+              params.set("config_id", configurationId);
+              params.set("configId", configurationId);
+            }
+            navigate(`/conference?${params.toString()}`, { replace: true });
           },
           onError: (error) => {
             hasCreatedConversation.current = false;
@@ -301,6 +401,7 @@ const Conference = () => {
     }
   }, [
     conversationId,
+    configurationId,
     createConversation,
     loading,
     navigate,
@@ -334,6 +435,10 @@ const Conference = () => {
     setActiveRoundNumber(1);
     setPendingPhaseRun(null);
     setQueuedHumanReplies([]);
+    setDisabledAgentIds([]);
+    setIsExpertCustomizerOpen(false);
+    setCustomizingAvatarId(null);
+    setCustomizingRoleDraft(null);
     activePhaseRef.current = "diverge";
     activeRoundNumberRef.current = 1;
     roundCitationIdsRef.current = [];
@@ -357,19 +462,266 @@ const Conference = () => {
     return map;
   }, [firstThreadPage?.rounds]);
 
-  const activeAvatarIds = useMemo(() => {
-    return avatarOrder.filter((avatarId) => {
-      const modelId = getModelForAvatar(avatarId);
-      return Boolean(modelId && activeModels.includes(modelId));
-    });
-  }, [activeModels, avatarOrder, getModelForAvatar]);
+  const configuredAgents = useMemo<ConfiguredAgent[]>(() => {
+    const panel = resolvedConfigurationSeed?.expertPanel ?? [];
+    return panel.flatMap((role, index) => {
+      const modelId = role?.model?.modelId?.trim();
+      if (!modelId) return [];
 
-  const hasModelDiversity = useMemo(() => {
-    const modelIds = activeAvatarIds
-      .map((avatarId) => getModelForAvatar(avatarId))
-      .filter((value): value is string => Boolean(value));
-    return new Set(modelIds).size > 1;
-  }, [activeAvatarIds, getModelForAvatar]);
+      const modelLabel =
+        role.model.displayName?.trim() ||
+        getModelById(modelId)?.name ||
+        modelId.split("/")[1] ||
+        modelId;
+
+      return [
+        {
+          avatarId: DEFAULT_AVATAR_ORDER[index] ?? `panel-agent-${index + 1}`,
+          panelIndex: index,
+          modelId,
+          roleTitle: role.title?.trim() || `Agent ${index + 1}`,
+          modelLabel,
+          avatarImage: resolveModelAvatarImage({
+            modelId,
+            displayName: role.model.displayName || modelLabel,
+          }),
+        },
+      ];
+    });
+  }, [resolvedConfigurationSeed?.expertPanel]);
+
+  const configuredRoleByAvatarId = useMemo(() => {
+    const panel = resolvedConfigurationSeed?.expertPanel ?? [];
+    const entries: Array<[string, ExpertRole]> = [];
+    for (const agent of configuredAgents) {
+      const role = panel[agent.panelIndex];
+      if (!role) continue;
+      entries.push([agent.avatarId, role]);
+    }
+    return new Map(entries);
+  }, [configuredAgents, resolvedConfigurationSeed?.expertPanel]);
+
+  const configuredAgentMap = useMemo(
+    () => new Map(configuredAgents.map((agent) => [agent.avatarId, agent])),
+    [configuredAgents]
+  );
+
+  const configuredAvatarIds = useMemo(
+    () => configuredAgents.map((agent) => agent.avatarId),
+    [configuredAgents]
+  );
+
+  const disabledAgentIdSet = useMemo(
+    () => new Set(disabledAgentIds),
+    [disabledAgentIds]
+  );
+
+  useEffect(() => {
+    if (configuredAvatarIds.length === 0) {
+      setAgentTurnOrder([]);
+      return;
+    }
+
+    setAgentTurnOrder((previous) => {
+      const retained = previous.filter((avatarId) => configuredAvatarIds.includes(avatarId));
+      const missing = configuredAvatarIds.filter((avatarId) => !retained.includes(avatarId));
+      const next = [...retained, ...missing];
+      if (
+        next.length === previous.length &&
+        next.every((avatarId, index) => avatarId === previous[index])
+      ) {
+        return previous;
+      }
+      return next;
+    });
+  }, [configuredAvatarIds]);
+
+  useEffect(() => {
+    setDisabledAgentIds((previous) =>
+      previous.filter((avatarId) => configuredAvatarIds.includes(avatarId))
+    );
+  }, [configuredAvatarIds]);
+
+  const agentDisplayById = useMemo(
+    () =>
+      Object.fromEntries(
+        configuredAgents.map((agent) => [
+          agent.avatarId,
+          {
+            displayName: agent.roleTitle,
+            avatarSrc: agent.avatarImage,
+            roleLabel: agent.modelLabel,
+          },
+        ])
+      ) as Record<
+        string,
+        {
+          displayName: string;
+          avatarSrc: string;
+          roleLabel: string;
+        }
+      >,
+    [configuredAgents]
+  );
+
+  const orderedAvatarIds = useMemo(
+    () => (agentTurnOrder.length > 0 ? agentTurnOrder : configuredAvatarIds),
+    [agentTurnOrder, configuredAvatarIds]
+  );
+
+  const activeAvatarIds = useMemo(
+    () => orderedAvatarIds.filter((avatarId) => !disabledAgentIdSet.has(avatarId)),
+    [disabledAgentIdSet, orderedAvatarIds]
+  );
+
+  const moveActiveAgent = useCallback(
+    (avatarId: string, direction: "up" | "down") => {
+      setAgentTurnOrder((previous) => {
+        const baseline = previous.length > 0 ? [...previous] : [...configuredAvatarIds];
+        const fromIndex = baseline.indexOf(avatarId);
+        if (fromIndex < 0) return baseline;
+        const toIndex = direction === "up" ? fromIndex - 1 : fromIndex + 1;
+        if (toIndex < 0 || toIndex >= baseline.length) return baseline;
+        const next = [...baseline];
+        [next[fromIndex], next[toIndex]] = [next[toIndex], next[fromIndex]];
+        return next;
+      });
+    },
+    [configuredAvatarIds]
+  );
+
+  const getModelForActiveAvatar = useCallback(
+    (avatarId: string) => configuredAgentMap.get(avatarId)?.modelId ?? null,
+    [configuredAgentMap]
+  );
+
+  const getAgentName = useCallback(
+    (avatarId: string) =>
+      configuredAgentMap.get(avatarId)?.roleTitle ?? getAgentMeta(avatarId)?.name ?? avatarId,
+    [configuredAgentMap]
+  );
+
+  const getConfiguredRoleForAvatar = useCallback(
+    (avatarId: string) => configuredRoleByAvatarId.get(avatarId) ?? null,
+    [configuredRoleByAvatarId]
+  );
+
+  const hasModelDiversity = useMemo(
+    () => new Set(configuredAgents.map((agent) => agent.modelId)).size > 1,
+    [configuredAgents]
+  );
+
+  const customizerAgentOptions = useMemo(
+    () =>
+      orderedAvatarIds.map((avatarId, index) => {
+        const configuredAgent = configuredAgentMap.get(avatarId);
+        const fallbackAgent = getAgentMeta(avatarId);
+        return {
+          avatarId,
+          label:
+            configuredAgent?.roleTitle ??
+            fallbackAgent?.name ??
+            `Agent ${index + 1}`,
+          modelLabel: configuredAgent?.modelLabel ?? configuredAgent?.modelId ?? "No model",
+          active: !disabledAgentIdSet.has(avatarId),
+        };
+      }),
+    [configuredAgentMap, disabledAgentIdSet, orderedAvatarIds]
+  );
+
+  const updateConfiguredRoleForAvatar = useCallback(
+    (avatarId: string, nextRole: ExpertRole) => {
+      setResolvedConfigurationSeed((previous) => {
+        if (!previous) return previous;
+
+        const panel = [...(previous.expertPanel ?? [])];
+        const targetAgent = configuredAgentMap.get(avatarId);
+        const targetIndex = targetAgent?.panelIndex ?? -1;
+
+        if (targetIndex < 0) {
+          return previous;
+        }
+
+        panel[targetIndex] = cloneExpertRole(nextRole);
+        return {
+          ...previous,
+          expertPanel: panel,
+        };
+      });
+    },
+    [configuredAgentMap]
+  );
+
+  const openExpertCustomizer = useCallback(
+    (avatarId: string) => {
+      const mappedAgent = configuredAgentMap.get(avatarId) ?? null;
+      const role =
+        getConfiguredRoleForAvatar(avatarId) ??
+        (mappedAgent ? buildFallbackRoleFromConfiguredAgent(mappedAgent) : null);
+      if (!role) return;
+
+      setCustomizingAvatarId(avatarId);
+      setCustomizingRoleDraft(cloneExpertRole(role));
+      setIsExpertCustomizerOpen(true);
+    },
+    [configuredAgentMap, getConfiguredRoleForAvatar]
+  );
+
+  const handleCustomizerSelectAgent = useCallback(
+    (avatarId: string) => {
+      const role = getConfiguredRoleForAvatar(avatarId);
+      if (!role) return;
+      setCustomizingAvatarId(avatarId);
+      setCustomizingRoleDraft(cloneExpertRole(role));
+    },
+    [getConfiguredRoleForAvatar]
+  );
+
+  const handleSaveCustomizerRole = useCallback(() => {
+    if (!customizingAvatarId || !customizingRoleDraft) return;
+
+    updateConfiguredRoleForAvatar(customizingAvatarId, customizingRoleDraft);
+    setCustomizingRoleDraft(cloneExpertRole(customizingRoleDraft));
+    toast({
+      title: "Role updated",
+      description: "Agent settings were updated for upcoming rounds.",
+    });
+  }, [customizingAvatarId, customizingRoleDraft, toast, updateConfiguredRoleForAvatar]);
+
+  const handleResetCustomizerRole = useCallback(() => {
+    if (!customizingAvatarId) return;
+    const original = getConfiguredRoleForAvatar(customizingAvatarId);
+    if (!original) return;
+    setCustomizingRoleDraft(cloneExpertRole(original));
+  }, [customizingAvatarId, getConfiguredRoleForAvatar]);
+
+  const handleToggleAgentActive = useCallback(
+    (avatarId: string, active: boolean) => {
+      setDisabledAgentIds((previous) => {
+        if (active) {
+          return previous.filter((id) => id !== avatarId);
+        }
+        if (previous.includes(avatarId)) {
+          return previous;
+        }
+
+        const currentActiveCount = orderedAvatarIds.filter(
+          (id) => !previous.includes(id)
+        ).length;
+        if (currentActiveCount <= MIN_ACTIVE_AGENTS) {
+          toast({
+            title: "Minimum 2 experts required",
+            description: "Keep at least 2 experts enabled for conference rounds.",
+            variant: "destructive",
+          });
+          return previous;
+        }
+
+        return [...previous, avatarId];
+      });
+    },
+    [orderedAvatarIds, toast]
+  );
 
   const resolveRunRoles = useCallback((avatarIds: string[]) => {
     const roleMap: Record<string, ConferenceAgentRole> = {};
@@ -497,6 +849,11 @@ const Conference = () => {
     return map;
   }, [threadNodes]);
 
+  const selectedMessageAgentDisplay = useMemo(() => {
+    if (!selectedMessage?.avatarId) return null;
+    return agentDisplayById[selectedMessage.avatarId] ?? null;
+  }, [agentDisplayById, selectedMessage?.avatarId]);
+
   const handleToggleCollapse = useCallback((messageId: string) => {
     setCollapsedIds((prev) => {
       const next = new Set(prev);
@@ -567,8 +924,23 @@ const Conference = () => {
     [conversationId, createReply]
   );
 
+  const formatAssistantTranscriptContent = useCallback(
+    (avatarId: string | null | undefined, content: string) => {
+      const normalizedAvatarId = typeof avatarId === "string" && avatarId.trim().length > 0
+        ? avatarId
+        : null;
+      const speakerName = normalizedAvatarId
+        ? configuredAgentMap.get(normalizedAvatarId)?.roleTitle ??
+          getAgentMeta(normalizedAvatarId)?.name ??
+          "Assistant"
+        : "Assistant";
+      return `[${speakerName}] ${content}`;
+    },
+    [configuredAgentMap]
+  );
+
   const buildTranscriptFromMessages = useCallback((): TranscriptMessage[] => {
-    return [...messages]
+    const sorted = [...messages]
       .sort((a, b) => {
         const leftKey = a.sort_key ?? "";
         const rightKey = b.sort_key ?? "";
@@ -579,16 +951,41 @@ const Conference = () => {
       })
       .map((item) => ({
         role: item.role as "user" | "assistant" | "system",
-        content: item.content,
+        content:
+          item.role === "assistant"
+            ? formatAssistantTranscriptContent(item.avatar_id, item.content)
+            : item.content,
       }));
-  }, [messages]);
+
+    if (sorted.length === 0) {
+      return [];
+    }
+
+    const clipMessage = (message: TranscriptMessage): TranscriptMessage => {
+      if (message.content.length <= MAX_TRANSCRIPT_MESSAGE_CHARS) {
+        return message;
+      }
+      return {
+        ...message,
+        content: `${message.content.slice(0, MAX_TRANSCRIPT_MESSAGE_CHARS)}\n[truncated]`,
+      };
+    };
+
+    if (sorted.length <= MAX_TRANSCRIPT_MESSAGES) {
+      return sorted.map(clipMessage);
+    }
+
+    const head = sorted[0];
+    const tail = sorted.slice(-(MAX_TRANSCRIPT_MESSAGES - 1));
+    return [head, ...tail].map(clipMessage);
+  }, [formatAssistantTranscriptContent, messages]);
 
   const setAgentState = useCallback(
     (avatarId: string, updates: Partial<AgentRunState>) => {
       setAgentRunStates((previous) => {
         const existing: AgentRunState = previous[avatarId] ?? {
           status: "queued",
-          modelId: getModelForAvatar(avatarId) ?? null,
+          modelId: getModelForActiveAvatar(avatarId) ?? null,
           preview: "",
           error: null,
         };
@@ -601,7 +998,7 @@ const Conference = () => {
         };
       });
     },
-    [getModelForAvatar]
+    [getModelForActiveAvatar]
   );
 
   const cancelAgentGeneration = useCallback(() => {
@@ -645,7 +1042,7 @@ const Conference = () => {
             break;
           }
 
-          const modelId = getModelForAvatar(avatarId);
+          const modelId = getModelForActiveAvatar(avatarId);
           if (!modelId) {
             failed.push(avatarId);
             setAgentState(avatarId, {
@@ -666,9 +1063,9 @@ const Conference = () => {
 
           try {
             const idempotencyKey = `${conversationId}:${userMessageId}:${avatarId}:${modelId}:${Date.now()}`;
-            const agentName = getAgentMeta(avatarId)?.name ?? avatarId;
+            const agentName = getAgentName(avatarId);
             const agentRole = runRoles[avatarId] ?? "default";
-            const phasePrompt = buildConferencePhaseSystemPrompt({
+            const phasePromptBase = buildConferencePhaseSystemPrompt({
               phase,
               roundNumber,
               agentName,
@@ -676,6 +1073,12 @@ const Conference = () => {
               citationMessageIds,
               fallbackReferenceId: userMessageId,
             });
+            const roleCustomizationPrompt = buildRoleCustomizationPrompt(
+              getConfiguredRoleForAvatar(avatarId)
+            );
+            const phasePrompt = roleCustomizationPrompt
+              ? `${phasePromptBase}\n${roleCustomizationPrompt}`
+              : phasePromptBase;
             const result = await streamAgentGeneration({
               conversationId,
               roundId: userMessageId,
@@ -708,18 +1111,6 @@ const Conference = () => {
               fallbackReferenceId: userMessageId,
             });
 
-            const priorAssistantMessages = transcript
-              .filter((item) => item.role === "assistant")
-              .map((item) => item.content);
-            if (
-              isPureRepetition({
-                candidate: normalized.content,
-                priorAssistantMessages,
-              })
-            ) {
-              throw new Error("Response repeated prior points without additive value.");
-            }
-
             await createReply.mutateAsync({
               conversationId,
               roundId: userMessageId,
@@ -730,7 +1121,10 @@ const Conference = () => {
               idempotencyKey: `${idempotencyKey}:persist`,
             });
 
-            transcript.push({ role: "assistant", content: normalized.content });
+            transcript.push({
+              role: "assistant",
+              content: formatAssistantTranscriptContent(avatarId, normalized.content),
+            });
             roundTranscriptRef.current = transcript;
 
             setAgentState(avatarId, {
@@ -802,7 +1196,7 @@ const Conference = () => {
                 for (const followupAvatarId of followupAvatarIds) {
                   next[followupAvatarId] = {
                     status: "queued",
-                    modelId: getModelForAvatar(followupAvatarId) ?? null,
+                    modelId: getModelForActiveAvatar(followupAvatarId) ?? null,
                     preview: "",
                     error: null,
                   };
@@ -842,7 +1236,7 @@ const Conference = () => {
               if (!state || state.status === "queued" || state.status === "generating") {
                 next[avatarId] = {
                   status: "cancelled",
-                  modelId: state?.modelId ?? getModelForAvatar(avatarId) ?? null,
+                  modelId: state?.modelId ?? getModelForActiveAvatar(avatarId) ?? null,
                   preview: state?.preview ?? "",
                   error: "Generation cancelled.",
                 };
@@ -863,7 +1257,10 @@ const Conference = () => {
       createReply,
       createUserReply,
       dequeueHumanReply,
-      getModelForAvatar,
+      getAgentName,
+      getConfiguredRoleForAvatar,
+      getModelForActiveAvatar,
+      formatAssistantTranscriptContent,
       resolveRunRoles,
       setAgentState,
       toast,
@@ -943,6 +1340,15 @@ const Conference = () => {
         return;
       }
 
+      if (trimmed.length > MAX_REPLY_CONTENT_CHARS) {
+        toast({
+          title: "Prompt too long",
+          description: `Reply length exceeds ${MAX_REPLY_CONTENT_CHARS.toLocaleString()} characters.`,
+          variant: "destructive",
+        });
+        return;
+      }
+
       if (isAiThinking) {
         enqueueHumanReply({
           parentMessageId,
@@ -987,10 +1393,10 @@ const Conference = () => {
           return;
         }
 
-        if (activeAvatarIds.length === 0) {
+        if (activeAvatarIds.length < MIN_ACTIVE_AGENTS) {
           toast({
-            title: "No active models",
-            description: "Select at least one model to generate agent responses.",
+            title: "Minimum 2 experts required",
+            description: "Enable at least 2 experts before running the conference.",
             variant: "destructive",
           });
           return;
@@ -1019,7 +1425,7 @@ const Conference = () => {
         for (const avatarId of activeAvatarIds) {
           initialStates[avatarId] = {
             status: "queued",
-            modelId: getModelForAvatar(avatarId) ?? null,
+            modelId: getModelForActiveAvatar(avatarId) ?? null,
             preview: "",
             error: null,
           };
@@ -1082,7 +1488,7 @@ const Conference = () => {
       conversationId,
       createUserReply,
       enqueueHumanReply,
-      getModelForAvatar,
+      getModelForActiveAvatar,
       hasConfiguredOpenRouterKey,
       hasPrivilegedAccess,
       firstThreadPage?.rounds.length,
@@ -1160,9 +1566,50 @@ const Conference = () => {
     }
   }, []);
 
-  const openModelSelection = useCallback(() => {
-    setModelSelectionOpenSignal((previous) => previous + 1);
-  }, []);
+  const openAiSettings = useCallback(() => {
+    if (promptScriptId) {
+      navigate(`/configure?templateId=${promptScriptId}`);
+      return;
+    }
+    navigate("/templates");
+  }, [navigate, promptScriptId]);
+
+  const triggerFirstPromptFromTemplate = useCallback(() => {
+    const draftPrompt = rootDraft.trim();
+    const templatePrompt = script.trim();
+    const seedPrompt = draftPrompt || templatePrompt;
+    if (!seedPrompt) {
+      toast({
+        title: "Prompt required",
+        description: "No template script found. Add a prompt and retry.",
+        variant: "destructive",
+      });
+      focusRootComposer();
+      return;
+    }
+
+    const normalizedSeedPrompt =
+      seedPrompt.length > MAX_REPLY_CONTENT_CHARS
+        ? seedPrompt.slice(0, MAX_REPLY_CONTENT_CHARS)
+        : seedPrompt;
+
+    if (normalizedSeedPrompt.length !== seedPrompt.length) {
+      toast({
+        title: "Prompt truncated",
+        description: `Template prompt exceeded ${MAX_REPLY_CONTENT_CHARS.toLocaleString()} characters and was truncated before sending.`,
+      });
+    }
+
+    void submitReply({
+      parentMessageId: null,
+      content: normalizedSeedPrompt,
+      clear: () => {
+        if (draftPrompt) {
+          setRootDraft("");
+        }
+      },
+    });
+  }, [focusRootComposer, rootDraft, script, submitReply, toast]);
 
   const nextStepState = useMemo<NextStepState>(() => {
     if (!conversationId) return "session_booting";
@@ -1170,14 +1617,19 @@ const Conference = () => {
     if (pendingPhaseRun) return "phase_checkpoint";
     if (failedAgentIds.length > 0) return "partial_failure";
     if (!hasPrivilegedAccess || !hasConfiguredOpenRouterKey) return "no_byok";
-    if (activeAvatarIds.length === 0) return "no_active_models";
+    if (configurationId && isConfigurationSeedLoading && activeAvatarIds.length < MIN_ACTIVE_AGENTS) {
+      return "session_booting";
+    }
+    if (activeAvatarIds.length < MIN_ACTIVE_AGENTS) return "no_active_models";
     return "idle";
   }, [
     activeAvatarIds.length,
+    configurationId,
     conversationId,
     failedAgentIds.length,
     hasConfiguredOpenRouterKey,
     hasPrivilegedAccess,
+    isConfigurationSeedLoading,
     isAiThinking,
     pendingPhaseRun,
     pendingParentId,
@@ -1248,9 +1700,10 @@ const Conference = () => {
         return {
           badgeVariant: "outline" as const,
           badgeLabel: "Setup",
-          title: "Pick active models for this round",
-          description: "Select at least one active model to receive agent replies.",
-          actionLabel: "Pick models",
+          title: "At least 2 active experts are required",
+          description:
+            "Enable at least 2 experts in Customize, or open Configuration to publish a panel.",
+          actionLabel: orderedAvatarIds.length > 0 ? "Open customize" : "Open AI settings",
           actionVariant: "default" as const,
           actionDisabled: false,
         };
@@ -1262,7 +1715,7 @@ const Conference = () => {
           title: threadNodes.length === 0 ? "Send your first prompt" : "Drive the next step",
           description:
             threadNodes.length === 0
-              ? "Ask the team to begin so each active agent can respond in sequence."
+              ? "Send the template script now and agents will run in sequence automatically."
               : "Post the next instruction or argument to continue the debate.",
           actionLabel: threadNodes.length === 0 ? "Send first prompt" : "Compose next prompt",
           actionVariant: "default" as const,
@@ -1277,6 +1730,7 @@ const Conference = () => {
     pendingPhaseRun,
     queuedHumanReplies.length,
     threadNodes.length,
+    orderedAvatarIds.length,
   ]);
 
   const handleNextStepPrimaryAction = useCallback(() => {
@@ -1300,9 +1754,17 @@ const Conference = () => {
         }
         return;
       case "no_active_models":
-        openModelSelection();
+        if (orderedAvatarIds.length > 0) {
+          openExpertCustomizer(orderedAvatarIds[0]);
+        } else {
+          openAiSettings();
+        }
         return;
       case "idle":
+        if (threadNodes.length === 0) {
+          triggerFirstPromptFromTemplate();
+          return;
+        }
         focusRootComposer();
         return;
       case "session_booting":
@@ -1316,10 +1778,14 @@ const Conference = () => {
     hasPrivilegedAccess,
     isAiThinking,
     navigate,
+    openExpertCustomizer,
+    orderedAvatarIds,
+    openAiSettings,
     navigateToAuthForByok,
     nextStepState,
-    openModelSelection,
     retryAllFailedAgents,
+    threadNodes.length,
+    triggerFirstPromptFromTemplate,
   ]);
 
   const currentRoundCount = firstThreadPage?.rounds.length ?? 0;
@@ -1491,21 +1957,44 @@ const Conference = () => {
       </section>
 
       <section className={editorialPanelClass}>
-        <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Active Agents</h3>
-        {activeAvatarIds.length === 0 ? (
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Active Agents</h3>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 rounded-lg px-2 text-[11px]"
+            onClick={() => {
+              const firstAgentId = orderedAvatarIds[0] ?? null;
+              if (!firstAgentId) return;
+              openExpertCustomizer(firstAgentId);
+            }}
+            disabled={orderedAvatarIds.length === 0}
+          >
+            Customize
+          </Button>
+        </div>
+        {activeAvatarIds.length < MIN_ACTIVE_AGENTS ? (
           <p className="mt-3 text-xs text-slate-500 dark:text-slate-300">
-            Activate at least one model to receive agent replies.
+            At least 2 active experts are required. Use Customize to re-enable experts.
           </p>
         ) : (
-          <div className="mt-3 space-y-3">
+          <div className="mt-3 space-y-2.5">
             {!hasModelDiversity ? (
               <p className="rounded-lg border border-amber-300/70 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
                 All active agents are currently mapped to the same model. Add at least one different model for better disagreement quality.
               </p>
             ) : null}
+            <p className="text-[11px] text-slate-500 dark:text-slate-300">
+              Use the arrow controls to set speaking order for the next round.
+            </p>
             {activeAvatarIds.map((avatarId, index) => {
-              const modelId = getModelForAvatar(avatarId);
+              const configuredAgent = configuredAgentMap.get(avatarId);
+              const modelId = configuredAgent?.modelId ?? getModelForActiveAvatar(avatarId);
+              const modelLabel = configuredAgent?.modelLabel ?? modelId ?? "No model";
               const agent = getAgentMeta(avatarId);
+              const avatarSrc =
+                configuredAgent?.avatarImage || agent?.image || "/images/avatars/standard.png";
               const roleMode = activeRoleMap[avatarId] ?? "default";
               const roleLabel =
                 roleMode === "contrarian"
@@ -1528,19 +2017,79 @@ const Conference = () => {
               return (
                 <div
                   key={avatarId}
-                  className="rounded-xl border border-slate-200 bg-slate-50/80 p-2.5 dark:border-slate-700 dark:bg-[#1b2331]"
+                  className="rounded-xl border border-slate-200 bg-slate-50/80 p-2 dark:border-slate-700 dark:bg-[#1b2331]"
                 >
-                  <div className="mb-2 flex items-center justify-between">
+                  <div className="mb-1.5 flex items-center justify-between">
                     <Badge variant="outline">#{index + 1}</Badge>
                     <div className="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 rounded-md"
+                        onClick={() => moveActiveAgent(avatarId, "up")}
+                        disabled={isAiThinking || index === 0}
+                        aria-label={`Move ${configuredAgent?.roleTitle ?? agent?.name ?? "agent"} up`}
+                        title="Move up"
+                      >
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 rounded-md"
+                        onClick={() => moveActiveAgent(avatarId, "down")}
+                        disabled={isAiThinking || index === activeAvatarIds.length - 1}
+                        aria-label={`Move ${configuredAgent?.roleTitle ?? agent?.name ?? "agent"} down`}
+                        title="Move down"
+                      >
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      </Button>
                       <Badge variant="outline">{roleLabel}</Badge>
                       <Badge variant="outline" className={statusClass}>
                         {statusLabel}
                       </Badge>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 rounded-md px-2 text-[10px]"
+                        onClick={() => openExpertCustomizer(avatarId)}
+                        disabled={isAiThinking}
+                      >
+                        Customize
+                      </Button>
                     </div>
                   </div>
-                  <AgentMiniCard agentId={agent?.id ?? avatarId} />
-                  <p className="mt-2 truncate text-xs text-slate-500 dark:text-slate-300">{modelId ?? "No model"}</p>
+                  <div className="flex items-center gap-2">
+                    {agent || configuredAgent ? (
+                      <img
+                        src={avatarSrc}
+                        alt={configuredAgent?.roleTitle ?? agent.name}
+                        className="h-8 w-8 shrink-0 rounded-full border border-slate-200 object-cover dark:border-slate-700"
+                        onError={(event) => {
+                          const target = event.currentTarget;
+                          if (!target.src.endsWith("/images/avatars/standard.png")) {
+                            target.src = "/images/avatars/standard.png";
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-[10px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-[#101826] dark:text-slate-200">
+                        {index + 1}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-semibold text-slate-900 dark:text-slate-100">
+                        {configuredAgent?.roleTitle ?? agent?.name ?? `Agent ${index + 1}`}
+                      </p>
+                      <p className="truncate text-[11px] text-slate-500 dark:text-slate-300">{modelLabel}</p>
+                      {modelId ? (
+                        <p className="truncate text-[10px] text-slate-400 dark:text-slate-500">{modelId}</p>
+                      ) : null}
+                    </div>
+                  </div>
                   {state?.preview ? (
                     <p className="mt-1 line-clamp-3 text-xs text-slate-500 dark:text-slate-300">{state.preview}</p>
                   ) : null}
@@ -1645,10 +2194,6 @@ const Conference = () => {
             <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
               Phase {displayPhaseMeta.label}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-1 text-blue-600 dark:bg-blue-500/10 dark:text-blue-300">
-              <Sparkles className="h-4 w-4" />
-              {activeAvatarIds.length} active agents
-            </span>
             {isAiThinking ? (
               <>
                 <span className="inline-flex items-center gap-1 text-primary">
@@ -1731,6 +2276,7 @@ const Conference = () => {
               selectedMessageId={selectedMessageId}
               linkTargetId={linkTargetId}
               roundLabelById={roundLabelById}
+              agentDisplayById={agentDisplayById}
               onSelectMessage={setSelectedMessageId}
               onToggleCollapse={handleToggleCollapse}
               onReply={setReplyingToId}
@@ -1812,13 +2358,6 @@ const Conference = () => {
 
       <div className="border-t border-slate-200/80 bg-white/90 px-5 py-4 backdrop-blur-lg dark:border-slate-700 dark:bg-[#141a26]/90">
         <div className="mx-auto w-full max-w-5xl space-y-3">
-          <ModelSelectionDropdown
-            selectedModels={selectedModels}
-            onSelectionChange={setSelectedModels}
-            disabled={!hasConfiguredOpenRouterKey || !hasPrivilegedAccess || isAiThinking}
-            openSignal={modelSelectionOpenSignal}
-            emphasize={nextStepState === "no_active_models"}
-          />
           {queuedHumanReplies.length > 0 ? (
             <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-700 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-300">
               {queuedHumanReplies.length} human message(s) queued. They will post immediately after the current agent reply completes.
@@ -1894,7 +2433,12 @@ const Conference = () => {
           </p>
         ) : (
           <div className="mt-3 space-y-3">
-            <AgentMiniCard agentId={selectedMessage.avatarId} />
+            <AgentMiniCard
+              agentId={selectedMessage.avatarId}
+              displayName={selectedMessageAgentDisplay?.displayName}
+              avatarSrc={selectedMessageAgentDisplay?.avatarSrc}
+              roleLabel={selectedMessageAgentDisplay?.roleLabel}
+            />
 
             <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-300">
               {selectedMessage.roundId ? (
@@ -1990,6 +2534,25 @@ const Conference = () => {
         leftSidebar={leftSidebar}
         centerColumn={centerColumn}
         rightSidebar={rightSidebar}
+      />
+      <ExpertCustomizerSheet
+        open={isExpertCustomizerOpen}
+        onOpenChange={(open) => {
+          setIsExpertCustomizerOpen(open);
+          if (!open) {
+            setCustomizingAvatarId(null);
+            setCustomizingRoleDraft(null);
+          }
+        }}
+        agents={customizerAgentOptions}
+        selectedAvatarId={customizingAvatarId}
+        onSelectAvatarId={handleCustomizerSelectAgent}
+        draftRole={customizingRoleDraft}
+        onDraftRoleChange={setCustomizingRoleDraft}
+        onSave={handleSaveCustomizerRole}
+        onReset={handleResetCustomizerRole}
+        onToggleActive={handleToggleAgentActive}
+        disableSave={isAiThinking}
       />
     </div>
   );

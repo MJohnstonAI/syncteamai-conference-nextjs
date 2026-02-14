@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { applyTemplateRoleOverridesToPanel } from "@/lib/ai/challenge-analyzer";
 import { analyzeChallengeWithAI } from "@/lib/ai/challenge-analyzer";
-import type { ChallengeAnalysis, TemplateData } from "@/lib/configuration/types";
+import type { ChallengeAnalysis, ExpertRole, TemplateData } from "@/lib/configuration/types";
 import { getEffectiveOpenRouterKey } from "@/lib/server/byok";
+import { getUserPolicyModelAllowlist } from "@/lib/server/openrouter-user-models";
 import {
   claimIdempotencyKey,
   enforceRateLimit,
@@ -61,15 +63,36 @@ const toExistingConfigurationRow = (
 };
 
 const toExistingAnalysis = (
-  row: ExistingConfigurationRow
+  row: ExistingConfigurationRow,
+  templateData: TemplateData,
+  allowedModelIds?: string[] | null
 ): ChallengeAnalysis | null => {
   if (isRecord(row.analysis_payload)) {
-    return row.analysis_payload as ChallengeAnalysis;
+    const analysisPayload = row.analysis_payload as ChallengeAnalysis;
+    const normalizedPanel = applyTemplateRoleOverridesToPanel({
+      templateData,
+      panel: Array.isArray(analysisPayload.expertPanel)
+        ? (analysisPayload.expertPanel as ExpertRole[])
+        : [],
+      maxRoles: 12,
+      allowedModelIds,
+    });
+    return {
+      ...analysisPayload,
+      expertPanel: normalizedPanel,
+    };
   }
 
   if (!row.problem_type || !Array.isArray(row.expert_panel) || row.expert_panel.length === 0) {
     return null;
   }
+
+  const normalizedPanel = applyTemplateRoleOverridesToPanel({
+    templateData,
+    panel: row.expert_panel as ExpertRole[],
+    maxRoles: 12,
+    allowedModelIds,
+  });
 
   return {
     problemType: row.problem_type,
@@ -78,7 +101,7 @@ const toExistingAnalysis = (
     recommendedStrategy: row.recommended_strategy ?? "balanced_roundtable",
     strategyReason: row.strategy_reason ?? "Loaded from saved configuration.",
     keyConsiderations: Array.isArray(row.key_considerations) ? row.key_considerations : [],
-    expertPanel: row.expert_panel,
+    expertPanel: normalizedPanel,
     estimatedDuration: row.estimated_duration ?? 45,
     estimatedCost: {
       min: row.estimated_cost_min ?? 0,
@@ -150,6 +173,35 @@ export async function POST(request: Request) {
       );
     }
 
+    let openRouterContext:
+      | {
+          apiKey: string | null;
+          allowedModelIds: string[] | null;
+        }
+      | null = null;
+
+    const resolveOpenRouterContext = async () => {
+      if (openRouterContext) {
+        return openRouterContext;
+      }
+
+      const serviceApiKey = process.env.OPENROUTER_API_KEY?.trim() || null;
+      const byokApiKey = serviceApiKey
+        ? null
+        : await getEffectiveOpenRouterKey({
+            supabase,
+            userId: user.id,
+          });
+      const apiKey = serviceApiKey || byokApiKey;
+      const allowedModelIds = apiKey ? await getUserPolicyModelAllowlist(apiKey) : null;
+
+      openRouterContext = {
+        apiKey,
+        allowedModelIds,
+      };
+      return openRouterContext;
+    };
+
     const { data: existingConfiguration, error: existingConfigurationError } = await supabase
       .from("conference_configurations")
       .select(
@@ -174,9 +226,14 @@ export async function POST(request: Request) {
     }
 
     if (existingConfiguration && !forceRefresh) {
+      const { allowedModelIds } = await resolveOpenRouterContext();
       const existingRow = toExistingConfigurationRow(existingConfiguration);
       const existingAnalysis = existingRow
-        ? toExistingAnalysis(existingRow)
+        ? toExistingAnalysis(
+            existingRow,
+            body.templateData as TemplateData,
+            allowedModelIds
+          )
         : null;
       if (existingAnalysis) {
         return NextResponse.json({ analysis: existingAnalysis, reused: true });
@@ -243,18 +300,12 @@ export async function POST(request: Request) {
       description: parsedTemplate.description ?? null,
     };
 
-    const serviceApiKey = process.env.OPENROUTER_API_KEY?.trim() || null;
-    const byokApiKey = serviceApiKey
-      ? null
-      : await getEffectiveOpenRouterKey({
-          supabase,
-          userId: user.id,
-        });
-    const apiKey = serviceApiKey || byokApiKey;
+    const { apiKey, allowedModelIds } = await resolveOpenRouterContext();
 
     const analysis = await analyzeChallengeWithAI({
       templateData,
       apiKey,
+      allowedModelIds,
     });
 
     return NextResponse.json({ analysis });

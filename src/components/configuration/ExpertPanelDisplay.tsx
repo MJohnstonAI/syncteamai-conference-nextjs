@@ -9,6 +9,7 @@ import {
   Layers3,
   Shield,
   Sparkles,
+  X,
   UserCog,
   Users,
 } from "lucide-react";
@@ -16,6 +17,8 @@ import type { ExpertRole } from "@/lib/configuration/types";
 
 type ExpertPanelDisplayProps = {
   panel: ExpertRole[];
+  excludedRoleIds?: string[];
+  onToggleRoleIncluded?: (roleId: string) => void;
   onRoleCustomize: (roleId: string) => void;
 };
 
@@ -36,15 +39,25 @@ const resolveIcon = (iconName: string) => {
   return <Icon className="h-6 w-6" />;
 };
 
+const isOverrideRole = (role: ExpertRole): boolean =>
+  role.category.trim().toLowerCase() === "debate participant" &&
+  /explicit override marker/i.test(role.whyIncluded);
+
 export default function ExpertPanelDisplay({
   panel,
+  excludedRoleIds = [],
+  onToggleRoleIncluded,
   onRoleCustomize,
 }: ExpertPanelDisplayProps) {
+  const excludedSet = new Set(excludedRoleIds);
+  const includedCount = panel.filter((role) => !excludedSet.has(role.id)).length;
+
   return (
     <section className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-lg font-semibold text-white">
-          Proposed Expert Panel ({panel.length} {panel.length === 1 ? "Role" : "Roles"})
+          Proposed Expert Panel ({includedCount} included / {panel.length}{" "}
+          {panel.length === 1 ? "Role" : "Roles"})
         </h2>
         <button
           type="button"
@@ -55,6 +68,15 @@ export default function ExpertPanelDisplay({
           Why these roles?
         </button>
       </div>
+      <p className="text-xs text-slate-400">
+        Toggle experts between Included and Excluded. Keep at least 2 experts included.
+      </p>
+
+      {panel.some(isOverrideRole) ? (
+        <div className="rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200">
+          Override Role tags indicate roles explicitly requested in the template using <span className="font-semibold">***role***</span>.
+        </div>
+      ) : null}
 
       {panel.length === 0 ? (
         <div className="rounded-xl border border-white/10 bg-[#2a2438] p-5 text-sm text-slate-400">
@@ -66,6 +88,8 @@ export default function ExpertPanelDisplay({
             <RoleCard
               key={role.id}
               role={role}
+              included={!excludedSet.has(role.id)}
+              onToggleIncluded={() => onToggleRoleIncluded?.(role.id)}
               onCustomize={() => onRoleCustomize(role.id)}
             />
           ))}
@@ -77,20 +101,35 @@ export default function ExpertPanelDisplay({
 
 function RoleCard({
   role,
+  included,
+  onToggleIncluded,
   onCustomize,
 }: {
   role: ExpertRole;
+  included: boolean;
+  onToggleIncluded: () => void;
   onCustomize: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-[#2a2438] p-5 transition-colors duration-200 hover:border-purple-500/40">
+    <div
+      className={`rounded-lg border border-white/10 bg-[#2a2438] p-5 transition-colors duration-200 hover:border-purple-500/40 ${
+        included ? "" : "opacity-75"
+      }`}
+    >
       <div className="mb-3 flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-500/20 text-purple-300">
             {resolveIcon(role.icon)}
           </div>
           <div>
-            <h3 className="text-base font-semibold text-white">{role.title}</h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-base font-semibold text-white">{role.title}</h3>
+              {isOverrideRole(role) ? (
+                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.08em] text-cyan-200">
+                  Override Role
+                </span>
+              ) : null}
+            </div>
             <p className="text-sm text-slate-400">{role.category}</p>
           </div>
         </div>
@@ -123,10 +162,15 @@ function RoleCard({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-purple-500/10 px-3 py-2 text-sm text-purple-300 transition-colors duration-200 hover:bg-purple-500/20"
+          onClick={onToggleIncluded}
+          className={
+            included
+              ? "inline-flex flex-1 items-center justify-center gap-1 rounded-lg bg-purple-500/10 px-3 py-2 text-sm text-purple-300 transition-colors duration-200 hover:bg-purple-500/20"
+              : "inline-flex flex-1 items-center justify-center gap-1 rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-200 transition-colors duration-200 hover:bg-rose-500/20"
+          }
         >
-          <Check className="h-4 w-4" />
-          Included
+          {included ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}
+          {included ? "Included" : "Excluded"}
         </button>
         <button
           type="button"
@@ -148,4 +192,3 @@ function MetaRow({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

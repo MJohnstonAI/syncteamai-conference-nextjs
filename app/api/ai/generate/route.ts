@@ -12,6 +12,7 @@ import {
   resolveRequestIdentity,
 } from "@/lib/server/rate-limit";
 import { callOpenRouter, type OpenRouterResult } from "@/lib/server/openrouter";
+import { getUserPolicyModelAllowlist } from "@/lib/server/openrouter-user-models";
 import { writeUsageEvent } from "@/lib/server/usage-metering";
 
 export const runtime = "nodejs";
@@ -47,6 +48,83 @@ const tooManyRequests = (message: string, retryAfterSec: number) =>
       },
     }
   );
+
+const FALLBACK_MODEL_LADDER: string[] = [
+  "google/gemini-2.5-flash",
+  "anthropic/claude-haiku-3.5",
+  "meta/llama-3.3-70b-instruct",
+  "openai/gpt-4o-mini",
+];
+
+const providerFallbacks: Record<string, string[]> = {
+  openai: ["openai/gpt-4o-mini", "google/gemini-2.5-flash", "anthropic/claude-haiku-3.5"],
+  anthropic: ["anthropic/claude-haiku-3.5", "google/gemini-2.5-flash", "openai/gpt-4o-mini"],
+  google: ["google/gemini-2.5-flash", "anthropic/claude-haiku-3.5", "openai/gpt-4o-mini"],
+  xai: ["google/gemini-2.5-flash", "anthropic/claude-haiku-3.5"],
+  meta: ["google/gemini-2.5-flash", "anthropic/claude-haiku-3.5"],
+};
+
+const resolveFallbackCandidates = (
+  modelId: string,
+  allowedModelIds?: string[] | null
+): string[] => {
+  const provider = modelId.split("/")[0]?.toLowerCase() ?? "";
+  const providerCandidates = providerFallbacks[provider] ?? [];
+  const candidates = Array.from(
+    new Set([modelId, ...providerCandidates, ...FALLBACK_MODEL_LADDER])
+  );
+
+  if (!allowedModelIds || allowedModelIds.length === 0) {
+    return candidates.slice(0, 8);
+  }
+
+  const allowedSet = new Set(
+    allowedModelIds
+      .map((candidate) => candidate.trim())
+      .filter((candidate) => candidate.length > 0)
+  );
+
+  const filtered = candidates.filter((candidate) => allowedSet.has(candidate));
+  if (filtered.length > 0) {
+    return filtered.slice(0, 8);
+  }
+
+  return candidates.slice(0, 8);
+};
+
+const shouldRetryWithFallbackModel = (
+  result: Extract<OpenRouterResult, { ok: false }>
+): boolean => {
+  if (result.errorCode === "INVALID_RESPONSE") {
+    return true;
+  }
+  if (result.errorCode === "TIMEOUT" || result.errorCode === "UPSTREAM_UNAVAILABLE") {
+    return true;
+  }
+  if (result.statusCode === 429 || result.statusCode >= 500) {
+    return true;
+  }
+  if (result.statusCode === 401 || result.statusCode === 403) {
+    return false;
+  }
+
+  const normalized = result.message.toLowerCase();
+  if (result.statusCode === 404) {
+    return (
+      normalized.includes("no endpoints found") ||
+      normalized.includes("data policy") ||
+      normalized.includes("zero data retention")
+    );
+  }
+  if (result.statusCode === 400 || result.statusCode === 422) {
+    return (
+      normalized.includes("model") ||
+      normalized.includes("endpoint") ||
+      normalized.includes("data policy")
+    );
+  }
+  return false;
+};
 
 export async function POST(request: Request) {
   let usageLogged = false;
@@ -189,16 +267,50 @@ export async function POST(request: Request) {
       );
     }
 
-    const openRouterResult = await callOpenRouter({
-      apiKey: openRouterKey,
-      modelId: body.modelId,
-      messages: body.messages.map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
-      timeoutMs: 25_000,
-      maxRetries: 2,
-    });
+    const requestedModelId = body.modelId;
+    const allowedModelIds = await getUserPolicyModelAllowlist(openRouterKey);
+    const modelCandidates = resolveFallbackCandidates(requestedModelId, allowedModelIds);
+    let openRouterResult: OpenRouterResult | null = null;
+    let resolvedModelForGeneration = requestedModelId;
+    let fallbackFromModel: string | null =
+      modelCandidates.length > 0 && modelCandidates[0] !== requestedModelId
+        ? requestedModelId
+        : null;
+
+    for (let index = 0; index < modelCandidates.length; index += 1) {
+      const candidateModelId = modelCandidates[index];
+      const candidateResult = await callOpenRouter({
+        apiKey: openRouterKey,
+        modelId: candidateModelId,
+        messages: body.messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        timeoutMs: 25_000,
+        maxRetries: 2,
+      });
+
+      openRouterResult = candidateResult;
+      resolvedModelForGeneration = candidateModelId;
+      if (candidateResult.ok) {
+        break;
+      }
+
+      if (
+        index < modelCandidates.length - 1 &&
+        shouldRetryWithFallbackModel(candidateResult as Extract<OpenRouterResult, { ok: false }>)
+      ) {
+        if (!fallbackFromModel) {
+          fallbackFromModel = requestedModelId;
+        }
+        continue;
+      }
+      break;
+    }
+
+    if (!openRouterResult) {
+      throw new Error("Model selection failed before OpenRouter call.");
+    }
 
     if (!openRouterResult.ok) {
       const failedResult = openRouterResult as Extract<OpenRouterResult, { ok: false }>;
@@ -213,7 +325,7 @@ export async function POST(request: Request) {
         userId: user.id,
         conversationId: body.conversationId,
         roundId: body.roundId ?? null,
-        modelId: body.modelId,
+        modelId: resolvedModelForGeneration,
         promptTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
@@ -226,9 +338,14 @@ export async function POST(request: Request) {
 
       return NextResponse.json(
         {
-          error: failedResult.message,
+          error:
+            fallbackFromModel && resolvedModelForGeneration !== requestedModelId
+              ? `${failedResult.message} (fallback from ${requestedModelId} to ${resolvedModelForGeneration} also failed)`
+              : failedResult.message,
           code: failedResult.errorCode,
           retryAfterSec: failedResult.retryAfterSec,
+          modelIdUsed: resolvedModelForGeneration,
+          fallbackFromModel: fallbackFromModel ?? undefined,
         },
         {
           status: failedResult.statusCode >= 400 ? failedResult.statusCode : 502,
@@ -250,7 +367,7 @@ export async function POST(request: Request) {
       userId: user.id,
       conversationId: body.conversationId,
       roundId: body.roundId ?? null,
-      modelId: body.modelId,
+      modelId: resolvedModelForGeneration,
       promptTokens,
       completionTokens,
       totalTokens,
@@ -263,6 +380,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       response: successResult.content,
+      modelIdUsed: resolvedModelForGeneration,
+      fallbackFromModel: fallbackFromModel ?? undefined,
       usage: {
         promptTokens,
         completionTokens,
@@ -276,7 +395,16 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: "Invalid request payload." }, { status: 400 });
+      return NextResponse.json(
+        {
+          error: "Invalid request payload.",
+          details: error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
+        },
+        { status: 400 }
+      );
     }
 
     if (!usageLogged && resolvedUserId && resolvedModelId) {
@@ -299,10 +427,9 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json(
-      { error: "Generation failed due to a server error." },
-      { status: 500 }
-    );
+    const message =
+      error instanceof Error ? error.message : "Generation failed due to a server error.";
+    return NextResponse.json({ error: message }, { status: 500 });
   } finally {
     if (slot?.acquired) {
       await slot.release();

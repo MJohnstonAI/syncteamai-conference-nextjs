@@ -399,10 +399,11 @@ const Configure = () => {
     try {
       let nextConfigurationId = configurationId;
 
-      if (!nextConfigurationId || (canEdit && isDirty)) {
-        if (!canEdit) {
-          throw new Error("This configuration is read-only.");
-        }
+      if (!canEdit && !nextConfigurationId) {
+        throw new Error("This demo configuration has not been published yet.");
+      }
+
+      if (canEdit && (!nextConfigurationId || isDirty)) {
         nextConfigurationId = await persistConfiguration({
           template: templateData,
           draft: false,
@@ -415,8 +416,8 @@ const Configure = () => {
       }
 
       const params = new URLSearchParams();
-      params.set("config_id", nextConfigurationId);
-      params.set("configId", nextConfigurationId);
+      params.set("config_id", nextConfigurationId!);
+      params.set("configId", nextConfigurationId!);
       params.set("title", templateData.problemStatement);
       params.set("script", templateData.script || "");
       params.set("prompt_id", templateData.id);

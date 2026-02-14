@@ -63,12 +63,18 @@ export const callOpenRouter = async ({
   messages,
   timeoutMs = 25_000,
   maxRetries = 2,
+  temperature,
+  responseFormat,
 }: {
   apiKey: string;
   modelId: string;
   messages: OpenRouterMessage[];
   timeoutMs?: number;
   maxRetries?: number;
+  temperature?: number;
+  responseFormat?:
+    | { type: "json_object" }
+    | { type: "json_schema"; json_schema: Record<string, unknown> };
 }): Promise<OpenRouterResult> => {
   const endpoint = `${getOpenRouterBaseUrl()}/chat/completions`;
   const { referer, title } = getOpenRouterHeaders();
@@ -91,6 +97,8 @@ export const callOpenRouter = async ({
           model: modelId,
           messages,
           stream: false,
+          ...(typeof temperature === "number" ? { temperature } : {}),
+          ...(responseFormat ? { response_format: responseFormat } : {}),
         }),
         signal: controller.signal,
       });

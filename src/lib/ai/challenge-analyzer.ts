@@ -11,7 +11,7 @@ import type {
 import { callOpenRouter } from "@/lib/server/openrouter";
 
 const PRIMARY_ANALYZER_MODEL_ID = "google/gemini-2.5-flash";
-const FALLBACK_ANALYZER_MODEL_ID = "openai/gpt-4o-mini";
+const FALLBACK_ANALYZER_MODEL_ID = "google/gemini-2.5-pro";
 
 const behaviorSchema = z.object({
   archetype: z.enum(["analytical", "strategic", "adversarial", "integrative", "creative"]),
@@ -67,6 +67,57 @@ const extractJsonPayload = (value: string): string | null => {
   return value.slice(start, end + 1);
 };
 
+const extractBalancedJsonObjects = (value: string): string[] => {
+  const results: string[] = [];
+  let depth = 0;
+  let startIndex = -1;
+  let inString = false;
+  let escaping = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+        continue;
+      }
+      if (character === "\\") {
+        escaping = true;
+        continue;
+      }
+      if (character === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (character === "{") {
+      if (depth === 0) {
+        startIndex = index;
+      }
+      depth += 1;
+      continue;
+    }
+
+    if (character === "}") {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && startIndex >= 0) {
+        results.push(value.slice(startIndex, index + 1));
+        startIndex = -1;
+      }
+    }
+  }
+
+  return results;
+};
+
 const stripCodeFences = (value: string): string => {
   const trimmed = value.trim();
   if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
@@ -78,17 +129,35 @@ const stripCodeFences = (value: string): string => {
   return value;
 };
 
+const sanitizeLooseJson = (value: string): string =>
+  value
+    .replace(/^\uFEFF/, "")
+    .replace(/[“”]/g, "\"")
+    .replace(/[‘’]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1");
+
 const parseAnalysisPayload = (
   rawText: string
 ): z.infer<typeof analysisSchema> | null => {
+  const stripped = stripCodeFences(rawText);
+  const balancedCandidates = [
+    ...extractBalancedJsonObjects(rawText),
+    ...extractBalancedJsonObjects(stripped),
+  ];
+
   const candidates = [
     rawText,
-    stripCodeFences(rawText),
+    stripped,
     extractJsonPayload(rawText),
-    extractJsonPayload(stripCodeFences(rawText)),
+    extractJsonPayload(stripped),
+    ...balancedCandidates,
   ]
     .filter((value): value is string => Boolean(value && value.trim()))
-    .map((value) => value.trim());
+    .map((value) => value.trim())
+    .flatMap((value) => {
+      const normalized = sanitizeLooseJson(value);
+      return normalized === value ? [value] : [value, normalized];
+    });
 
   const seen = new Set<string>();
   for (const candidate of candidates) {
@@ -459,6 +528,14 @@ Return this JSON shape:
 }
 `;
 
+const buildJsonRepairPrompt = (rawOutput: string): string => `
+Fix this output into valid JSON that matches the required schema exactly.
+Return JSON only. No markdown. No explanation.
+
+OUTPUT TO FIX:
+${rawOutput}
+`;
+
 export const analyzeChallengeWithAI = async ({
   templateData,
   apiKey,
@@ -474,32 +551,74 @@ export const analyzeChallengeWithAI = async ({
     FALLBACK_ANALYZER_MODEL_ID,
   ];
 
-  for (const modelId of analyzerModels) {
+  const attemptModelAnalysis = async (modelId: string): Promise<ChallengeAnalysis | null> => {
+    const baseMessages = [
+      {
+        role: "system" as const,
+        content:
+          "You are a configuration engine. Output valid JSON only. No markdown. No backticks.",
+      },
+      {
+        role: "user" as const,
+        content: buildAnalysisPrompt(templateData),
+      },
+    ];
+
     const aiResponse = await callOpenRouter({
       apiKey,
       modelId,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a configuration engine. Output valid JSON only. No markdown. No backticks.",
-        },
-        {
-          role: "user",
-          content: buildAnalysisPrompt(templateData),
-        },
-      ],
+      messages: baseMessages,
       timeoutMs: 35_000,
       maxRetries: 1,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
     });
 
     if (!aiResponse.ok) {
-      continue;
+      return null;
     }
 
     const validated = parseAnalysisPayload(aiResponse.content);
     if (validated) {
       return normalizeAnalysis(validated, templateData);
+    }
+
+    const repairResponse = await callOpenRouter({
+      apiKey,
+      modelId,
+      messages: [
+        ...baseMessages,
+        {
+          role: "assistant",
+          content: aiResponse.content,
+        },
+        {
+          role: "user",
+          content: buildJsonRepairPrompt(aiResponse.content),
+        },
+      ],
+      timeoutMs: 25_000,
+      maxRetries: 0,
+      temperature: 0,
+      responseFormat: { type: "json_object" },
+    });
+
+    if (!repairResponse.ok) {
+      return null;
+    }
+
+    const repaired = parseAnalysisPayload(repairResponse.content);
+    if (repaired) {
+      return normalizeAnalysis(repaired, templateData);
+    }
+
+    return null;
+  };
+
+  for (const modelId of analyzerModels) {
+    const analysis = await attemptModelAnalysis(modelId);
+    if (analysis) {
+      return analysis;
     }
   }
 

@@ -1629,19 +1629,6 @@ const Conference = () => {
         </div>
       </section>
 
-      {hasPrivilegedAccess ? (
-        <section className={editorialPanelClass}>
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full rounded-xl border-slate-200 bg-white dark:border-slate-600 dark:bg-[#1f2736]"
-            onClick={() => navigateToAuthForByok("sidebar")}
-          >
-            <Key className="mr-2 h-4 w-4" />
-            {hasConfiguredOpenRouterKey ? "Manage BYOK" : "Enable BYOK"}
-          </Button>
-        </section>
-      ) : null}
     </div>
   );
 

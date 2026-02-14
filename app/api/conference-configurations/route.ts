@@ -152,7 +152,7 @@ const canEditTemplateConfiguration = ({
   isAdmin: boolean;
 }) => {
   if (template.is_demo) {
-    return isAdmin && template.user_id === currentUserId;
+    return isAdmin || template.user_id === currentUserId;
   }
   return template.user_id === currentUserId;
 };
@@ -245,7 +245,7 @@ export async function POST(request: Request) {
     if (!template) {
       return NextResponse.json({ error: "Template not found." }, { status: 404 });
     }
-    if (!template.user_id) {
+    if (!template.is_demo && !template.user_id) {
       return NextResponse.json(
         { error: "Template owner is not assigned." },
         { status: 422 }
@@ -295,12 +295,14 @@ export async function POST(request: Request) {
       current?.problem_statement ??
       template.title;
 
+    const configurationOwnerId = template.is_demo ? user.id : template.user_id!;
+
     const { data, error } = await supabase
       .from("conference_configurations")
       .upsert(
         {
           template_id: body.templateId,
-          user_id: template.user_id,
+          user_id: configurationOwnerId,
           selected_mode: selectedMode,
           is_draft: isDraft,
           template_title: templateTitle,

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SyncTeamAI Authentication</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<style type="text/tailwindcss">
+        :root {
+            --primary: #2563EB;
+            --primary-hover: #1D4ED8;
+            --surface-bg: #F8FAFC;
+            --card-bg: #FFFFFF;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--surface-bg);
+            color: #1E293B;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-6 bg-slate-50 relative overflow-hidden">
+<div class="absolute top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
+<div class="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100 rounded-full blur-[100px] opacity-60"></div>
+<div class="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-100 rounded-full blur-[100px] opacity-60"></div>
+</div>
+<div class="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+<div class="hidden lg:flex lg:col-span-5 flex-col justify-center h-full pt-10">
+<div class="flex items-center gap-3 mb-8">
+<div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
+<span class="material-symbols-outlined text-white">groups</span>
+</div>
+<h1 class="text-2xl font-bold text-slate-900 tracking-tight">SyncTeamAI</h1>
+</div>
+<h2 class="text-4xl font-extrabold text-slate-900 leading-tight mb-6">
+                Unlock the power of <br/> <span class="text-blue-600">AI Collaboration</span>
+</h2>
+<p class="text-slate-600 text-lg leading-relaxed mb-8">
+                Connect your own API keys and start building intelligent multi-agent workflows in minutes. Secure, collaborative, and developer-first.
+            </p>
+<div class="space-y-4">
+<div class="flex items-center gap-3 text-slate-700">
+<span class="material-symbols-outlined text-green-500">check_circle</span>
+<span>Bring Your Own Key (BYOK) architecture</span>
+</div>
+<div class="flex items-center gap-3 text-slate-700">
+<span class="material-symbols-outlined text-green-500">check_circle</span>
+<span>End-to-end encrypted storage</span>
+</div>
+<div class="flex items-center gap-3 text-slate-700">
+<span class="material-symbols-outlined text-green-500">check_circle</span>
+<span>Instant access to GPT-4, Claude, and more</span>
+</div>
+</div>
+</div>
+<div class="col-span-1 lg:col-span-7 w-full max-w-md mx-auto lg:max-w-none">
+<div class="mb-8 w-full max-w-2xl mx-auto">
+<div class="relative flex items-center justify-between w-full">
+<div class="absolute left-0 top-1/2 transform -translate-y-1/2 w-full h-0.5 bg-slate-200 -z-10"></div>
+<div class="flex flex-col items-center gap-2 bg-slate-50 px-2 relative z-10">
+<div class="w-4 h-4 rounded-full bg-blue-600 ring-4 ring-slate-50 flex items-center justify-center"></div>
+<span class="text-xs font-semibold text-blue-700 uppercase tracking-wider">Account</span>
+</div>
+<div class="flex flex-col items-center gap-2 bg-slate-50 px-2 relative z-10">
+<div class="w-4 h-4 rounded-full bg-slate-300 ring-4 ring-slate-50 flex items-center justify-center"></div>
+<span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Configuration</span>
+</div>
+</div>
+</div>
+<div class="space-y-6">
+<div class="bg-white rounded-2xl shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+<div class="p-8">
+<div class="flex justify-between items-start mb-6">
+<div>
+<h3 class="text-xl font-bold text-slate-900">Sign in to your account</h3>
+<p class="text-sm text-slate-500 mt-1">We'll send you a magic link for a password-free sign in.</p>
+</div>
+<span class="bg-blue-50 text-blue-700 text-xs font-semibold px-2.5 py-1 rounded-full border border-blue-100">Step 1 of 2</span>
+</div>
+<form class="space-y-5" onsubmit="event.preventDefault();">
+<div>
+<label class="block text-sm font-medium text-slate-700 mb-1" for="email">Email address</label>
+<div class="relative">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-slate-400 text-[20px]">alternate_email</span>
+</div>
+<input class="block w-full pl-10 pr-3 py-2.5 border border-slate-300 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition-shadow" id="email" name="email" placeholder="you@example.com" type="email" value="alex.dev@company.com"/>
+</div>
+</div>
+<button class="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors" type="button">
+                                Send Magic Link
+                            </button>
+</form>
+</div>
+<div class="bg-slate-50 px-8 py-4 border-t border-slate-100 flex items-center justify-center">
+<p class="text-xs text-slate-500 text-center">
+                            By signing in, you agree to our <a class="text-blue-600 hover:underline" href="#">Terms of Service</a> and <a class="text-blue-600 hover:underline" href="#">Privacy Policy</a>.
+                        </p>
+</div>
+</div>
+<div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden opacity-60 relative">
+<div class="absolute inset-0 z-10 bg-slate-50/50 backdrop-blur-[1px] cursor-not-allowed"></div>
+<div class="p-8">
+<div class="flex justify-between items-start mb-6">
+<div>
+<h3 class="text-xl font-bold text-slate-900">Configure OpenRouter API</h3>
+<p class="text-sm text-slate-500 mt-1">Enter your API key to enable AI capabilities.</p>
+</div>
+<span class="bg-slate-100 text-slate-500 text-xs font-semibold px-2.5 py-1 rounded-full border border-slate-200">Pending</span>
+</div>
+<div class="space-y-5">
+<div>
+<label class="block text-sm font-medium text-slate-700 mb-1">API Key</label>
+<div class="relative">
+<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+<span class="material-symbols-outlined text-slate-400 text-[20px]">vpn_key</span>
+</div>
+<input class="block w-full pl-10 pr-3 py-2.5 border border-slate-200 rounded-lg bg-slate-50 text-slate-400 sm:text-sm" disabled="" placeholder="sk-or-..." type="password"/>
+</div>
+</div>
+<div class="flex gap-3">
+<button class="flex-1 py-2.5 px-4 border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-400 bg-slate-50" disabled="">
+                                    Save Configuration
+                                </button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</body></html>

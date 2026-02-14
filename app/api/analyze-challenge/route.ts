@@ -136,9 +136,9 @@ export async function POST(request: Request) {
     const isAdmin = userRoleRecord?.role === "admin";
     const isTemplateOwner = templateRecord.user_id === user.id;
 
-    if (templateRecord.is_demo && !(isAdmin && isTemplateOwner)) {
+    if (templateRecord.is_demo && !isAdmin && !isTemplateOwner) {
       return NextResponse.json(
-        { error: "Only the demo owner admin can regenerate demo configurations." },
+        { error: "This demo configuration has not been published yet." },
         { status: 403 }
       );
     }

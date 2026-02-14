@@ -12,18 +12,34 @@ export function useUserRole() {
     queryFn: async () => {
       if (!user) return undefined as undefined | UserRole;
 
-      const { data, error } = await supabase
+      const { data: entitlementData, error: entitlementError } = await supabase
         .from("dev_entitlements")
         .select("tier, expires_at")
         .eq("user_id", user.id)
         .maybeSingle();
 
-      if (error) throw error;
-      const expiresAt = data?.expires_at ? Date.parse(data.expires_at) : null;
-      if (expiresAt && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-        return "pending" as UserRole;
+      if (entitlementError) throw entitlementError;
+
+      const expiresAt = entitlementData?.expires_at
+        ? Date.parse(entitlementData.expires_at)
+        : null;
+      const entitlementTier =
+        expiresAt && Number.isFinite(expiresAt) && expiresAt <= Date.now()
+          ? ("pending" as UserRole)
+          : ((entitlementData?.tier ?? "pending") as UserRole);
+
+      if (entitlementTier !== "pending") {
+        return entitlementTier;
       }
-      return (data?.tier ?? "pending") as UserRole;
+
+      const { data: roleData, error: roleError } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (roleError) throw roleError;
+      return (roleData?.role ?? entitlementTier) as UserRole;
     },
     enabled: !!user,
   });

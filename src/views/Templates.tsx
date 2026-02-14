@@ -29,7 +29,6 @@ import {
 import { useNavigate } from "@/lib/router";
 import { AGENT_META } from "@/lib/agents";
 import { cn } from "@/lib/utils";
-import { DemoBanner } from "@/components/DemoBanner";
 import { Footer } from "@/components/Footer";
 import { HomeIcon } from "@/components/HomeIcon";
 import { TemplateDialog } from "@/components/TemplateDialog";
@@ -208,7 +207,7 @@ const buildConfigurePath = (prompt: Prompt) => {
 
 const Templates = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const { data: role } = useUserRole();
   const { data: groups, isLoading: groupsLoading } = useGroups();
   const { data: prompts, isLoading: promptsLoading } = usePrompts();
@@ -439,6 +438,10 @@ const Templates = () => {
     return map;
   }, [allGroups]);
 
+  const headerAuthTarget = "/auth";
+  const headerAuthLabel = "Sign-in";
+  const requiresAuth = !loading && !user;
+
   const renderGroupButton = ({
     groupId,
     label,
@@ -489,60 +492,129 @@ const Templates = () => {
     );
   };
 
-  const GroupsSidebar = ({ mobile }: { mobile: boolean }) => (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className={cn("templates-kicker", !mobile && sidebarCollapsed && "sr-only")}>Collections</h2>
-        {!mobile ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={sidebarCollapsed ? "Expand groups sidebar" : "Collapse groups sidebar"}
-            onClick={() => setSidebarCollapsed((previous) => !previous)}
-            className="h-9 w-9 rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-          >
-            {sidebarCollapsed ? (
-              <PanelLeft className="h-4 w-4" />
-            ) : (
-              <PanelLeftClose className="h-4 w-4" />
-            )}
-          </Button>
-        ) : null}
-      </div>
+  const GroupsSidebar = ({ mobile }: { mobile: boolean }) => {
+    const groupList = (
+      <TooltipProvider delayDuration={120}>
+        <div className="space-y-2 pr-2">
+          {renderGroupButton({
+            groupId: "all",
+            label: "All Groups",
+            compact: !mobile && sidebarCollapsed,
+            isAllOption: true,
+          })}
+          {groupsLoading ? (
+            <>
+              {Array.from({ length: 7 }).map((_, index) => (
+                <Skeleton
+                  key={`group-skeleton-${index}`}
+                  className={cn("h-10 rounded-full", sidebarCollapsed && !mobile ? "w-10" : "w-full")}
+                />
+              ))}
+            </>
+          ) : (
+            allGroups.map((group) =>
+              renderGroupButton({
+                groupId: group.id,
+                label: group.name,
+                compact: !mobile && sidebarCollapsed,
+              })
+            )
+          )}
+        </div>
+      </TooltipProvider>
+    );
 
-      <ScrollArea className={cn(mobile ? "h-[65vh]" : "h-[calc(100vh-14.5rem)]")}>
-        <TooltipProvider delayDuration={120}>
-          <div className="space-y-2 pr-2">
-            {renderGroupButton({
-              groupId: "all",
-              label: "All Groups",
-              compact: !mobile && sidebarCollapsed,
-              isAllOption: true,
-            })}
-            {groupsLoading ? (
-              <>
-                {Array.from({ length: 7 }).map((_, index) => (
-                  <Skeleton
-                    key={`group-skeleton-${index}`}
-                    className={cn("h-10 rounded-full", sidebarCollapsed && !mobile ? "w-10" : "w-full")}
-                  />
-                ))}
-              </>
-            ) : (
-              allGroups.map((group) =>
-                renderGroupButton({
-                  groupId: group.id,
-                  label: group.name,
-                  compact: !mobile && sidebarCollapsed,
-                })
-              )
-            )}
-          </div>
-        </TooltipProvider>
-      </ScrollArea>
-    </div>
-  );
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className={cn("templates-kicker", !mobile && sidebarCollapsed && "sr-only")}>Collections</h2>
+          {!mobile ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={sidebarCollapsed ? "Expand groups sidebar" : "Collapse groups sidebar"}
+              onClick={() => setSidebarCollapsed((previous) => !previous)}
+              className="h-9 w-9 rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            >
+              {sidebarCollapsed ? (
+                <PanelLeft className="h-4 w-4" />
+              ) : (
+                <PanelLeftClose className="h-4 w-4" />
+              )}
+            </Button>
+          ) : null}
+        </div>
+
+        {mobile ? <ScrollArea className="h-[65vh]">{groupList}</ScrollArea> : groupList}
+      </div>
+    );
+  };
+
+  if (requiresAuth) {
+    return (
+      <div className="templates-shell min-h-screen" data-templates-page>
+        <div className="mx-auto w-full max-w-[1120px] px-4 pb-12 pt-6 sm:px-6 lg:px-10">
+          <main className="space-y-7">
+            <header className="templates-panel rounded-[1.75rem] p-5 sm:p-7">
+              <div className="flex items-start justify-between gap-4">
+                <HomeIcon />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => navigate(headerAuthTarget)}
+                  className="h-10 shrink-0 rounded-full border-slate-200 bg-white/95 px-5 text-xs font-semibold uppercase tracking-[0.08em] text-slate-700 hover:bg-slate-50"
+                >
+                  {headerAuthLabel}
+                </Button>
+              </div>
+              <div className="mt-5 space-y-3">
+                <p className="templates-kicker flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+                  Marketplace
+                </p>
+                <h1 className="templates-serif text-4xl leading-[1.02] text-slate-900 sm:text-5xl dark:text-slate-100">
+                  Sign in to access your <span className="templates-hero-gradient">Templates</span>
+                </h1>
+                <p className="templates-text-muted max-w-2xl text-base leading-relaxed sm:text-lg">
+                  Templates are protected by row-level security. Sign in before browsing, creating, or configuring
+                  template workflows.
+                </p>
+              </div>
+            </header>
+
+            <section className="templates-panel rounded-2xl border-dashed p-10 text-center">
+              <h2 className="templates-serif text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                Authentication required
+              </h2>
+              <p className="templates-text-muted mt-2 text-sm">
+                You need an active account session to load your template library.
+              </p>
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                <Button
+                  type="button"
+                  onClick={() => navigate("/auth")}
+                  className="templates-primary-cta rounded-full px-6 text-xs font-bold uppercase tracking-[0.1em] hover:opacity-95"
+                >
+                  Sign in
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => navigate("/")}
+                  className="rounded-full border-slate-200 px-6 text-xs font-semibold uppercase tracking-[0.1em] text-slate-700 hover:bg-slate-50"
+                >
+                  Back Home
+                </Button>
+              </div>
+            </section>
+          </main>
+        </div>
+
+        <Footer />
+      </div>
+    );
+  }
 
   return (
     <div className="templates-shell min-h-screen" data-templates-page>
@@ -584,6 +656,14 @@ const Templates = () => {
                     </SheetContent>
                   </Sheet>
                 </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => navigate(headerAuthTarget)}
+                  className="h-10 shrink-0 rounded-full border-slate-200 bg-white/95 px-5 text-xs font-semibold uppercase tracking-[0.08em] text-slate-700 hover:bg-slate-50"
+                >
+                  {headerAuthLabel}
+                </Button>
               </div>
 
               <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
@@ -621,7 +701,6 @@ const Templates = () => {
                 </div>
               </div>
 
-              {!user ? <div className="mt-6"><DemoBanner /></div> : null}
             </header>
 
             <section className="templates-panel space-y-5 rounded-[1.5rem] p-4 sm:p-5">

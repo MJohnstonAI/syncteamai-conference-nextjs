@@ -16,6 +16,7 @@ export function useGroups() {
 
   return useQuery({
     queryKey: ["groups", user?.id],
+    enabled: Boolean(user),
     queryFn: async () => {
       // Fetch preset groups and user's own groups
       const { data, error } = await supabase

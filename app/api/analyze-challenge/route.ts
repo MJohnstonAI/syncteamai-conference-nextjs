@@ -32,13 +32,6 @@ const bodySchema = z.object({
   templateData: templateDataSchema,
   selectedMode: z.enum(["quick-start", "custom"]).optional(),
   forceRefresh: z.boolean().optional(),
-  openRouterKey: z
-    .string()
-    .trim()
-    .min(10)
-    .max(500)
-    .regex(/^\S+$/, "OpenRouter key must not contain whitespace")
-    .optional(),
 });
 
 type ExistingConfigurationRow = {
@@ -256,9 +249,8 @@ export async function POST(request: Request) {
       : await getEffectiveOpenRouterKey({
           supabase,
           userId: user.id,
-          sessionKey: body.openRouterKey,
         });
-    const apiKey = body.openRouterKey?.trim() || serviceApiKey || byokApiKey;
+    const apiKey = serviceApiKey || byokApiKey;
 
     const analysis = await analyzeChallengeWithAI({
       templateData,

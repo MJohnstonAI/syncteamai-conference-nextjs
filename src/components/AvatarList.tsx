@@ -124,7 +124,7 @@ export const AvatarList = ({ onAvatarClick, userRole }: AvatarListProps) => {
     selectedModels,
     activeModels,
     avatarOrder,
-    openRouterKey,
+    hasConfiguredOpenRouterKey,
     setSelectedModels,
     toggleModelActive,
     reorderAvatars,
@@ -135,7 +135,7 @@ export const AvatarList = ({ onAvatarClick, userRole }: AvatarListProps) => {
   const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
   const isPaidOrAdmin = userRole === 'paid' || userRole === 'admin' || userRole === 'free';
-  const hasValidKey = !!openRouterKey;
+  const hasValidKey = hasConfiguredOpenRouterKey;
 
   const getAvatarState = (avatarId: string): 'active' | 'silent' | 'not-selected' | 'locked' => {
     if (!isPaidOrAdmin || !hasValidKey) return 'locked';

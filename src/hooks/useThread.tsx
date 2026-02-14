@@ -91,7 +91,6 @@ export const streamAgentGeneration = async ({
   selectedAvatar,
   modelId,
   messages,
-  openRouterKey,
   idempotencyKey,
   signal,
   onDelta,
@@ -101,7 +100,6 @@ export const streamAgentGeneration = async ({
   selectedAvatar: string;
   modelId: string;
   messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
-  openRouterKey?: string;
   idempotencyKey?: string;
   signal?: AbortSignal;
   onDelta: (chunk: string) => void;
@@ -126,7 +124,6 @@ export const streamAgentGeneration = async ({
       selectedAvatar,
       modelId,
       messages,
-      openRouterKey: openRouterKey ?? undefined,
       idempotencyKey,
     }),
     signal,

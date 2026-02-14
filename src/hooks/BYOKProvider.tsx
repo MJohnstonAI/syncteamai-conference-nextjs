@@ -6,20 +6,16 @@ import { authedFetch } from '@/lib/auth-token';
 import { useAuth } from '@/hooks/useAuth';
 
 interface OpenRouterState {
-  openRouterKey: string | null;
   selectedModels: string[];
   activeModels: string[];
   avatarOrder: string[];
-  storeKey: boolean;
 }
 
 const STORAGE_KEY = 'byok_openrouter';
 const DEFAULT_STATE: OpenRouterState = {
-  openRouterKey: null,
   selectedModels: ['openai/gpt-4o', 'anthropic/claude-opus-4'],
   activeModels: ['openai/gpt-4o', 'anthropic/claude-opus-4'],
   avatarOrder: DEFAULT_AVATAR_ORDER,
-  storeKey: false,
 };
 
 export const BYOKProvider = ({ children }: { children: ReactNode }) => {
@@ -28,6 +24,10 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
   const [hasStoredOpenRouterKey, setHasStoredOpenRouterKey] = useState(false);
   const [hasDevFallbackOpenRouterKey, setHasDevFallbackOpenRouterKey] = useState(false);
   const [keyLast4, setKeyLast4] = useState<string | null>(null);
+  const [lastValidatedAt, setLastValidatedAt] = useState<string | null>(null);
+  const [lastValidationStatus, setLastValidationStatus] = useState<'unknown' | 'success' | 'failed'>('unknown');
+  const [lastValidationError, setLastValidationError] = useState<string | null>(null);
+  const [needsRevalidation, setNeedsRevalidation] = useState(false);
   const [isLoadingKeyStatus, setIsLoadingKeyStatus] = useState(false);
 
   useEffect(() => {
@@ -40,8 +40,6 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
           selectedModels: parsed.selectedModels ?? prev.selectedModels,
           activeModels: parsed.activeModels ?? prev.activeModels,
           avatarOrder: parsed.avatarOrder ?? prev.avatarOrder,
-          storeKey: parsed.storeKey ?? prev.storeKey,
-          openRouterKey: null,
         }));
       } catch (e) {
         console.error('[BYOKProvider] Failed to parse stored state:', e);
@@ -55,16 +53,19 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
       selectedModels: state.selectedModels,
       activeModels: state.activeModels,
       avatarOrder: state.avatarOrder,
-      storeKey: state.storeKey,
     };
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(persistableState));
-  }, [state.selectedModels, state.activeModels, state.avatarOrder, state.storeKey]);
+  }, [state.selectedModels, state.activeModels, state.avatarOrder]);
 
   const refreshStoredKeyStatus = useCallback(async () => {
     if (!user) {
       setHasStoredOpenRouterKey(false);
       setHasDevFallbackOpenRouterKey(false);
       setKeyLast4(null);
+      setLastValidatedAt(null);
+      setLastValidationStatus('unknown');
+      setLastValidationError(null);
+      setNeedsRevalidation(false);
       return;
     }
 
@@ -81,20 +82,28 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
       const payload = (await response.json()) as {
         hasStoredKey?: boolean;
         keyLast4?: string | null;
-        storeKey?: boolean;
         hasDevFallbackKey?: boolean;
+        lastValidatedAt?: string | null;
+        lastValidationStatus?: 'unknown' | 'success' | 'failed';
+        lastValidationError?: string | null;
+        needsRevalidation?: boolean;
       };
 
       setHasStoredOpenRouterKey(Boolean(payload.hasStoredKey));
       setHasDevFallbackOpenRouterKey(Boolean(payload.hasDevFallbackKey));
       setKeyLast4(payload.keyLast4 ?? null);
-      if (typeof payload.storeKey === 'boolean') {
-        setState((prev) => ({ ...prev, storeKey: payload.storeKey }));
-      }
+      setLastValidatedAt(payload.lastValidatedAt ?? null);
+      setLastValidationStatus(payload.lastValidationStatus ?? 'unknown');
+      setLastValidationError(payload.lastValidationError ?? null);
+      setNeedsRevalidation(Boolean(payload.needsRevalidation));
     } catch {
       setHasStoredOpenRouterKey(false);
       setHasDevFallbackOpenRouterKey(false);
       setKeyLast4(null);
+      setLastValidatedAt(null);
+      setLastValidationStatus('unknown');
+      setLastValidationError(null);
+      setNeedsRevalidation(false);
     } finally {
       setIsLoadingKeyStatus(false);
     }
@@ -104,35 +113,32 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
     void refreshStoredKeyStatus();
   }, [refreshStoredKeyStatus]);
 
-  const setOpenRouterKey = (key: string, shouldStore = false) => {
-    const sanitized = key.trim();
-    setState((prev) => ({
-      ...prev,
-      openRouterKey: sanitized.length > 0 ? sanitized : null,
-      storeKey: shouldStore,
-    }));
-  };
-
-  const clearOpenRouterKey = () => {
-    setState((prev) => ({ ...prev, openRouterKey: null }));
-  };
-
-  const setStoreKeyPreference = (store: boolean) => {
-    setState((prev) => ({ ...prev, storeKey: store }));
-  };
-
   const setStoredKeyStatus = (status: {
     hasStoredKey: boolean;
     keyLast4: string | null;
-    storeKey: boolean;
     hasDevFallbackKey?: boolean;
+    lastValidatedAt?: string | null;
+    lastValidationStatus?: 'unknown' | 'success' | 'failed';
+    lastValidationError?: string | null;
+    needsRevalidation?: boolean;
   }) => {
     setHasStoredOpenRouterKey(status.hasStoredKey);
     if (typeof status.hasDevFallbackKey === 'boolean') {
       setHasDevFallbackOpenRouterKey(status.hasDevFallbackKey);
     }
     setKeyLast4(status.keyLast4);
-    setState((prev) => ({ ...prev, storeKey: status.storeKey }));
+    if (typeof status.lastValidatedAt !== 'undefined') {
+      setLastValidatedAt(status.lastValidatedAt ?? null);
+    }
+    if (status.lastValidationStatus) {
+      setLastValidationStatus(status.lastValidationStatus);
+    }
+    if (typeof status.lastValidationError !== 'undefined') {
+      setLastValidationError(status.lastValidationError ?? null);
+    }
+    if (typeof status.needsRevalidation !== 'undefined') {
+      setNeedsRevalidation(Boolean(status.needsRevalidation));
+    }
   };
 
   const setSelectedModels = (models: string[]) => {
@@ -190,6 +196,10 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
     setHasStoredOpenRouterKey(false);
     setHasDevFallbackOpenRouterKey(false);
     setKeyLast4(null);
+    setLastValidatedAt(null);
+    setLastValidationStatus('unknown');
+    setLastValidationError(null);
+    setNeedsRevalidation(false);
     sessionStorage.removeItem(STORAGE_KEY);
   };
 
@@ -200,21 +210,18 @@ export const BYOKProvider = ({ children }: { children: ReactNode }) => {
   return (
     <BYOKContext.Provider
       value={{
-        openRouterKey: state.openRouterKey,
         selectedModels: state.selectedModels,
         activeModels: state.activeModels,
         avatarOrder: state.avatarOrder,
-        storeKey: state.storeKey,
         hasStoredOpenRouterKey,
         hasDevFallbackOpenRouterKey,
-        hasConfiguredOpenRouterKey: Boolean(
-          state.openRouterKey || hasStoredOpenRouterKey || hasDevFallbackOpenRouterKey
-        ),
+        hasConfiguredOpenRouterKey: Boolean(hasStoredOpenRouterKey || hasDevFallbackOpenRouterKey),
         keyLast4,
+        lastValidatedAt,
+        lastValidationStatus,
+        lastValidationError,
+        needsRevalidation,
         isLoadingKeyStatus,
-        setOpenRouterKey,
-        clearOpenRouterKey,
-        setStoreKeyPreference,
         setStoredKeyStatus,
         refreshStoredKeyStatus,
         setSelectedModels,

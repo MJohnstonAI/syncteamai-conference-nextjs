@@ -21,6 +21,7 @@ export function usePrompts() {
 
   return useQuery({
     queryKey: ["prompts", user?.id],
+    enabled: Boolean(user),
     queryFn: async () => {
       const { data, error } = await supabase
         .from("saved_prompts")

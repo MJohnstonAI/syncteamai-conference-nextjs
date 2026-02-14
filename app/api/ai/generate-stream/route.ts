@@ -27,13 +27,6 @@ const bodySchema = z.object({
   selectedAvatar: z.string().trim().min(1).max(64),
   modelId: z.string().trim().min(3).max(120),
   messages: z.array(messageSchema).min(1).max(200),
-  openRouterKey: z
-    .string()
-    .trim()
-    .min(10)
-    .max(500)
-    .regex(/^\S+$/, "OpenRouter key must not contain whitespace")
-    .optional(),
   idempotencyKey: z.string().trim().min(8).max(180).optional(),
 });
 
@@ -201,12 +194,11 @@ export async function POST(request: Request) {
     const openRouterKey = await getEffectiveOpenRouterKey({
       supabase,
       userId: user.id,
-      sessionKey: body.openRouterKey,
     });
     if (!openRouterKey) {
       return NextResponse.json(
         {
-          error: "OpenRouter key required. Add one in Settings.",
+          error: "OpenRouter key required. Add one on the Sign-in page.",
           code: "BYOK_REQUIRED",
         },
         { status: 400 }

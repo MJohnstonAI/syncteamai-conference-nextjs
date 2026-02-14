@@ -94,7 +94,6 @@ const Conference = () => {
   const { toast } = useToast();
   const { data: userRole } = useUserRole();
   const {
-    openRouterKey,
     hasConfiguredOpenRouterKey,
     selectedModels,
     activeModels,
@@ -185,7 +184,7 @@ const Conference = () => {
 
   useEffect(() => {
     if (!loading && !user) {
-      navigate("/auth");
+      navigate("/templates", { replace: true });
     }
   }, [loading, navigate, user]);
 
@@ -686,7 +685,6 @@ const Conference = () => {
                 { role: "system", content: phasePrompt },
                 ...transcript,
               ],
-              openRouterKey: openRouterKey ?? undefined,
               idempotencyKey,
               signal: abortController.signal,
               onDelta: (chunk) => {
@@ -866,7 +864,6 @@ const Conference = () => {
       createUserReply,
       dequeueHumanReply,
       getModelForAvatar,
-      openRouterKey,
       resolveRunRoles,
       setAgentState,
       toast,
@@ -984,7 +981,7 @@ const Conference = () => {
         if (!hasConfiguredOpenRouterKey || !hasPrivilegedAccess) {
           toast({
             title: "BYOK Required",
-            description: "Add your OpenRouter API key in Settings to continue.",
+            description: "Add your OpenRouter API key on the Sign-in page to continue.",
             variant: "destructive",
           });
           return;
@@ -1142,15 +1139,15 @@ const Conference = () => {
     return query ? `/conference?${query}` : "/conference";
   }, [searchParams]);
 
-  const navigateToSettingsForByok = useCallback(
+  const navigateToAuthForByok = useCallback(
     (entry: "next_step" | "sidebar" | "alert") => {
       const params = new URLSearchParams({
+        step: "2",
         source: "conference",
-        focus: "byok",
         entry,
         return_to: conferenceReturnPath,
       });
-      navigate(`/settings?${params.toString()}`);
+      navigate(`/auth?${params.toString()}`);
     },
     [conferenceReturnPath, navigate]
   );
@@ -1297,7 +1294,7 @@ const Conference = () => {
         return;
       case "no_byok":
         if (hasPrivilegedAccess) {
-          navigateToSettingsForByok("next_step");
+          navigateToAuthForByok("next_step");
         } else {
           navigate("/subscribe");
         }
@@ -1319,7 +1316,7 @@ const Conference = () => {
     hasPrivilegedAccess,
     isAiThinking,
     navigate,
-    navigateToSettingsForByok,
+    navigateToAuthForByok,
     nextStepState,
     openModelSelection,
     retryAllFailedAgents,
@@ -1358,45 +1355,46 @@ const Conference = () => {
   const editorialPanelClass =
     "rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_8px_28px_-18px_rgba(15,23,42,0.28)] dark:border-slate-700/80 dark:bg-[#141a26]";
 
-  const priorityCard = (
-    <section className="mx-auto w-full max-w-5xl rounded-[1.35rem] bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-[2px] shadow-[0_20px_45px_-24px_rgba(79,70,229,0.8)]">
-      <div className="rounded-[1.2rem] bg-white px-5 py-4 dark:bg-[#141a26] sm:px-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-3">
-              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">
-                {hasPrivilegedAccess ? "Conference Flow" : "Access Required"}
+  const priorityCard =
+    nextStepState === "no_byok" ? null : (
+      <section className="mx-auto w-full max-w-5xl rounded-[1.35rem] bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-[2px] shadow-[0_20px_45px_-24px_rgba(79,70,229,0.8)]">
+        <div className="rounded-[1.2rem] bg-white px-5 py-4 dark:bg-[#141a26] sm:px-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">
+                  {hasPrivilegedAccess ? "Conference Flow" : "Access Required"}
+                </p>
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em]">
+                  Phase {displayPhaseMeta.label}
+                </Badge>
+                <Badge variant={nextStepMeta.badgeVariant} className="text-[10px] uppercase tracking-[0.12em]">
+                  {nextStepMeta.badgeLabel}
+                </Badge>
+              </div>
+              <h2 className="font-[var(--font-playfair)] text-2xl font-bold leading-tight text-slate-900 dark:text-slate-100">
+                {nextStepMeta.title}
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-300">{nextStepMeta.description}</p>
+              <p className="text-xs text-slate-500 dark:text-slate-300">
+                Round {displayRoundNumber}: {displayPhaseMeta.shortDescription}
               </p>
-              <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em]">
-                Phase {displayPhaseMeta.label}
-              </Badge>
-              <Badge variant={nextStepMeta.badgeVariant} className="text-[10px] uppercase tracking-[0.12em]">
-                {nextStepMeta.badgeLabel}
-              </Badge>
             </div>
-            <h2 className="font-[var(--font-playfair)] text-2xl font-bold leading-tight text-slate-900 dark:text-slate-100">
-              {nextStepMeta.title}
-            </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-300">{nextStepMeta.description}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-300">
-              Round {displayRoundNumber}: {displayPhaseMeta.shortDescription}
-            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant={nextStepMeta.actionVariant}
+              onClick={handleNextStepPrimaryAction}
+              disabled={nextStepMeta.actionDisabled}
+              className="h-11 min-w-44 rounded-xl px-5 text-sm font-semibold"
+            >
+              {nextStepMeta.actionLabel}
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant={nextStepMeta.actionVariant}
-            onClick={handleNextStepPrimaryAction}
-            disabled={nextStepMeta.actionDisabled}
-            className="h-11 min-w-44 rounded-xl px-5 text-sm font-semibold"
-          >
-            {nextStepMeta.actionLabel}
-            <ArrowRight className="ml-2 h-4 w-4" />
-          </Button>
         </div>
-      </div>
-    </section>
-  );
+      </section>
+    );
 
   const leftSidebar = (
     <div className="space-y-4 pb-4">
@@ -1637,7 +1635,7 @@ const Conference = () => {
             variant="outline"
             size="sm"
             className="w-full rounded-xl border-slate-200 bg-white dark:border-slate-600 dark:bg-[#1f2736]"
-            onClick={() => navigateToSettingsForByok("sidebar")}
+            onClick={() => navigateToAuthForByok("sidebar")}
           >
             <Key className="mr-2 h-4 w-4" />
             {hasConfiguredOpenRouterKey ? "Manage BYOK" : "Enable BYOK"}
@@ -1692,7 +1690,7 @@ const Conference = () => {
             <AlertTitle>BYOK Needed for Agent Replies</AlertTitle>
             <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
               <span>Add your OpenRouter key to continue multi-agent generation.</span>
-              <Button size="sm" onClick={() => navigateToSettingsForByok("alert")} className="rounded-lg">
+              <Button size="sm" onClick={() => navigateToAuthForByok("alert")} className="rounded-lg">
                 Configure
               </Button>
             </AlertDescription>

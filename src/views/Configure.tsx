@@ -11,7 +11,6 @@ import ConfigurationModeSelector from "@/components/configuration/ConfigurationM
 import ExpertPanelDisplay from "@/components/configuration/ExpertPanelDisplay";
 import RoleCustomizationDialog from "@/components/configuration/RoleCustomizationDialog";
 import { Button } from "@/components/ui/button";
-import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
 import { authedFetch } from "@/lib/auth-token";
 import { resolveEstimatedCost } from "@/lib/configuration/cost";
@@ -86,7 +85,6 @@ const Configure = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { openRouterKey } = useBYOK();
 
   const templateId = searchParams.get("templateId");
   const [templateData, setTemplateData] = useState<TemplateData | null>(null);
@@ -174,7 +172,6 @@ const Configure = () => {
           templateData: seedTemplate,
           selectedMode: mode,
           forceRefresh,
-          openRouterKey: openRouterKey ?? undefined,
         }),
       });
 
@@ -188,7 +185,7 @@ const Configure = () => {
 
       return payload.analysis;
     },
-    [openRouterKey]
+    []
   );
 
   const seedAndPersistConfiguration = useCallback(

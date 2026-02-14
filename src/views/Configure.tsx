@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import AIAnalysisLoader from "@/components/configuration/AIAnalysisLoader";
 import AIAnalysisResult from "@/components/configuration/AIAnalysisResult";
@@ -101,6 +101,7 @@ const Configure = () => {
   const [isDirty, setIsDirty] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [customizingRoleId, setCustomizingRoleId] = useState<string | null>(null);
+  const loadedTemplateIdRef = useRef<string | null>(null);
 
   const canEdit = Boolean(templateMeta?.canEdit);
 
@@ -121,27 +122,25 @@ const Configure = () => {
 
   const persistConfiguration = useCallback(
     async ({
+      template,
       draft,
       analysis,
       panel,
       mode,
     }: {
+      template: TemplateData;
       draft: boolean;
       analysis: ChallengeAnalysis | null;
       panel: ExpertRole[];
       mode: ConfigurationMode;
     }): Promise<string> => {
-      if (!templateData) {
-        throw new Error("Template is not loaded.");
-      }
-
       const response = await authedFetch("/api/conference-configurations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          templateId: templateData.id,
+          templateId: template.id,
           selectedMode: mode,
-          templateData,
+          templateData: template,
           aiAnalysis: analysis ?? undefined,
           expertPanel: panel,
           isDraft: draft,
@@ -157,11 +156,15 @@ const Configure = () => {
 
       return payload.configurationId;
     },
-    [templateData]
+    []
   );
 
   const analyzeChallenge = useCallback(
-    async (seedTemplate: TemplateData): Promise<ChallengeAnalysis> => {
+    async (
+      seedTemplate: TemplateData,
+      mode: ConfigurationMode,
+      forceRefresh: boolean
+    ): Promise<ChallengeAnalysis> => {
       const response = await authedFetch("/api/analyze-challenge", {
         method: "POST",
         headers: {
@@ -169,7 +172,8 @@ const Configure = () => {
         },
         body: JSON.stringify({
           templateData: seedTemplate,
-          selectedMode,
+          selectedMode: mode,
+          forceRefresh,
           openRouterKey: openRouterKey ?? undefined,
         }),
       });
@@ -184,31 +188,35 @@ const Configure = () => {
 
       return payload.analysis;
     },
-    [openRouterKey, selectedMode]
+    [openRouterKey]
   );
 
   const seedAndPersistConfiguration = useCallback(
     async ({
       seedTemplate,
       isRefresh,
+      mode,
     }: {
       seedTemplate: TemplateData;
       isRefresh: boolean;
+      mode: ConfigurationMode;
     }) => {
       setIsAnalyzing(true);
       setLoadError(null);
       try {
-        const analysis = await analyzeChallenge(seedTemplate);
+        const analysis = await analyzeChallenge(seedTemplate, mode, isRefresh);
         const panel = analysis.expertPanel ?? [];
 
         setAiAnalysis(analysis);
         setExpertPanel(panel);
+        setSelectedMode(mode);
 
         const savedConfigurationId = await persistConfiguration({
+          template: seedTemplate,
           draft: false,
           analysis,
           panel,
-          mode: selectedMode,
+          mode,
         });
 
         setConfigurationId(savedConfigurationId);
@@ -218,6 +226,14 @@ const Configure = () => {
           toast({
             title: "Configuration refreshed",
             description: "AI generated a new configuration and saved it.",
+          });
+        }
+
+        if (analysis.analysisSource === "heuristic") {
+          toast({
+            title: "Heuristic fallback used",
+            description:
+              "OpenRouter did not return valid JSON, so a local fallback configuration was used.",
           });
         }
       } catch (error) {
@@ -235,7 +251,7 @@ const Configure = () => {
         setIsAnalyzing(false);
       }
     },
-    [analyzeChallenge, persistConfiguration, selectedMode, toast]
+    [analyzeChallenge, persistConfiguration, toast]
   );
 
   const loadConfiguration = useCallback(async () => {
@@ -296,6 +312,7 @@ const Configure = () => {
       await seedAndPersistConfiguration({
         seedTemplate: payload.template,
         isRefresh: false,
+        mode: "quick-start",
       });
     } catch (error) {
       const message =
@@ -321,6 +338,11 @@ const Configure = () => {
       navigate("/templates");
       return;
     }
+
+    if (loadedTemplateIdRef.current === templateId) {
+      return;
+    }
+    loadedTemplateIdRef.current = templateId;
     void loadConfiguration();
   }, [loadConfiguration, navigate, templateId, toast]);
 
@@ -344,6 +366,7 @@ const Configure = () => {
 
     try {
       const nextConfigurationId = await persistConfiguration({
+        template: templateData,
         draft: true,
         analysis: aiAnalysis,
         panel: expertPanel,
@@ -384,6 +407,7 @@ const Configure = () => {
           throw new Error("This configuration is read-only.");
         }
         nextConfigurationId = await persistConfiguration({
+          template: templateData,
           draft: false,
           analysis: aiAnalysis,
           panel: expertPanel,
@@ -471,6 +495,7 @@ const Configure = () => {
                 void seedAndPersistConfiguration({
                   seedTemplate: templateData,
                   isRefresh: true,
+                  mode: selectedMode,
                 });
               }}
               disabled={isAnalyzing || !templateData || !canEdit}
@@ -538,4 +563,3 @@ const Configure = () => {
 };
 
 export default Configure;
-

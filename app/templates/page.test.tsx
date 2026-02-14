@@ -6,7 +6,7 @@ vi.mock("@/views/Templates", () => ({
   default: () => (
     <div data-testid="templates-mock-view">
       <h1>Browse Templates</h1>
-      <p>Choose a template to start your AI conference</p>
+      <p>Choose a template to configure your AI panel</p>
     </div>
   ),
 }));
@@ -18,7 +18,7 @@ describe("/templates route", () => {
     const html = renderToStaticMarkup(<Page />);
 
     expect(html).toContain("Browse Templates");
-    expect(html).toContain("Choose a template to start your AI conference");
+    expect(html).toContain("Choose a template to configure your AI panel");
     expect(html).not.toContain("404");
   });
 });

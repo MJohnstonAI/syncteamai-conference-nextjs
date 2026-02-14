@@ -77,6 +77,90 @@ export type Database = {
         }
         Relationships: []
       }
+      conference_configurations: {
+        Row: {
+          analysis_payload: Json | null
+          complexity_score: number | null
+          created_at: string
+          estimated_cost_max: number | null
+          estimated_cost_min: number | null
+          estimated_duration: number | null
+          expert_panel: Json
+          id: string
+          is_draft: boolean
+          key_considerations: Json | null
+          problem_statement: string | null
+          problem_type: string | null
+          recommended_strategy: string | null
+          selected_mode: string
+          strategy_reason: string | null
+          template_id: string
+          template_script: string | null
+          template_title: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          analysis_payload?: Json | null
+          complexity_score?: number | null
+          created_at?: string
+          estimated_cost_max?: number | null
+          estimated_cost_min?: number | null
+          estimated_duration?: number | null
+          expert_panel?: Json
+          id?: string
+          is_draft?: boolean
+          key_considerations?: Json | null
+          problem_statement?: string | null
+          problem_type?: string | null
+          recommended_strategy?: string | null
+          selected_mode?: string
+          strategy_reason?: string | null
+          template_id: string
+          template_script?: string | null
+          template_title?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          analysis_payload?: Json | null
+          complexity_score?: number | null
+          created_at?: string
+          estimated_cost_max?: number | null
+          estimated_cost_min?: number | null
+          estimated_duration?: number | null
+          expert_panel?: Json
+          id?: string
+          is_draft?: boolean
+          key_considerations?: Json | null
+          problem_statement?: string | null
+          problem_type?: string | null
+          recommended_strategy?: string | null
+          selected_mode?: string
+          strategy_reason?: string | null
+          template_id?: string
+          template_script?: string | null
+          template_title?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conference_configurations_template_id_fkey"
+            columns: ["template_id"]
+            isOneToOne: false
+            referencedRelation: "saved_prompts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conference_configurations_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       dev_entitlements: {
         Row: {
           id: string

@@ -198,15 +198,12 @@ const canEditTemplate = (
   return canCreateTemplates(role) && prompt.user_id === userId;
 };
 
-const buildConferencePath = (prompt: Prompt) => {
-  const params = new URLSearchParams({
-    title: prompt.title,
-    script: prompt.script,
-  });
+const buildConfigurePath = (prompt: Prompt) => {
+  const params = new URLSearchParams();
   if (prompt.id) {
-    params.set("prompt_id", prompt.id);
+    params.set("templateId", prompt.id);
   }
-  return `/conference?${params.toString()}`;
+  return `/configure?${params.toString()}`;
 };
 
 const Templates = () => {
@@ -347,9 +344,9 @@ const Templates = () => {
     setSearchQuery("");
   }, []);
 
-  const handleStartConference = useCallback(
+  const handleConfigurePanel = useCallback(
     (prompt: Prompt) => {
-      navigate(buildConferencePath(prompt));
+      navigate(buildConfigurePath(prompt));
     },
     [navigate]
   );
@@ -599,7 +596,7 @@ const Templates = () => {
                     Browse <span className="templates-hero-gradient">Templates</span>
                   </h1>
                   <p className="templates-text-muted max-w-2xl text-base leading-relaxed sm:text-lg">
-                    Choose a template to start your AI conference
+                    Choose a template to configure your AI panel
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 pb-1">
@@ -894,11 +891,11 @@ const Templates = () => {
                           <div className="flex flex-wrap items-center gap-3 pt-1">
                             <Button
                               type="button"
-                              onClick={() => handleStartConference(prompt)}
+                              onClick={() => handleConfigurePanel(prompt)}
                               className="templates-primary-cta rounded-full px-5 py-2.5 text-xs font-bold uppercase tracking-[0.12em] hover:opacity-95"
                             >
                               <Play className="mr-2 h-4 w-4" />
-                              Start Conference
+                              Configure AI Panel
                             </Button>
                             <Button
                               type="button"
@@ -1065,12 +1062,12 @@ const Templates = () => {
                   type="button"
                   className="w-full"
                   onClick={() => {
-                    handleStartConference(previewPrompt);
+                    handleConfigurePanel(previewPrompt);
                     setPreviewPrompt(null);
                   }}
                 >
                   <Play className="mr-2 h-4 w-4" />
-                  Start Conference
+                  Configure AI Panel
                 </Button>
               </div>
             </>

@@ -217,6 +217,22 @@
     inset 0 0 0 1px rgb(255 255 255 / 0.25);
 }
 
+/* Configuration page uses a deep navy/purple workspace theme. */
+[data-configure-page] {
+  background:
+    radial-gradient(
+      120% 120% at 0% 0%,
+      color-mix(in srgb, #895af6 16%, transparent),
+      transparent 48%
+    ),
+    radial-gradient(
+      120% 120% at 100% 0%,
+      color-mix(in srgb, #5f3dc4 18%, transparent),
+      transparent 48%
+    ),
+    #1a1625;
+}
+
 /* Session Vault page aligns with Conference + Templates palette. */
 [data-sessions-page] {
   --sv-bg: #f3f6ff;

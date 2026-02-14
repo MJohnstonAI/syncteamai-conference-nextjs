@@ -27,6 +27,7 @@ import { useMessages } from "@/hooks/useMessages";
 import { useUserRole } from "@/hooks/useUserRole";
 import { useBYOK } from "@/hooks/useBYOK";
 import { useToast } from "@/hooks/use-toast";
+import { authedFetch } from "@/lib/auth-token";
 import { getAgentMeta } from "@/lib/agents";
 import {
   buildConferencePhaseSystemPrompt,
@@ -80,6 +81,12 @@ type NextStepState =
   | "no_active_models"
   | "idle";
 
+type ConfigurationSeed = {
+  title: string;
+  script: string;
+  promptScriptId: string | null;
+};
+
 const Conference = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -117,6 +124,8 @@ const Conference = () => {
   const [pendingPhaseRun, setPendingPhaseRun] = useState<PendingPhaseRun | null>(null);
   const [queuedHumanReplies, setQueuedHumanReplies] = useState<QueuedHumanReply[]>([]);
   const [modelSelectionOpenSignal, setModelSelectionOpenSignal] = useState(0);
+  const [resolvedConfigurationSeed, setResolvedConfigurationSeed] = useState<ConfigurationSeed | null>(null);
+  const [isConfigurationSeedLoading, setIsConfigurationSeedLoading] = useState(false);
 
   const hasCreatedConversation = useRef(false);
   const generationAbortRef = useRef<AbortController | null>(null);
@@ -128,10 +137,19 @@ const Conference = () => {
   const activeRoundNumberRef = useRef(1);
   const rootComposerRef = useRef<HTMLDivElement | null>(null);
 
-  const title = searchParams.get("title") || "Conference";
-  const script = searchParams.get("script") || "";
-  const promptScriptId = searchParams.get("prompt_id");
+  const configurationId =
+    searchParams.get("config_id") ?? searchParams.get("configId");
+  const queryTitle = searchParams.get("title");
+  const queryScript = searchParams.get("script");
+  const queryPromptScriptId = searchParams.get("prompt_id");
+  const title = queryTitle || resolvedConfigurationSeed?.title || "Conference";
+  const script = queryScript || resolvedConfigurationSeed?.script || "";
+  const promptScriptId =
+    queryPromptScriptId || resolvedConfigurationSeed?.promptScriptId || null;
   const linkedMessageId = searchParams.get("msg");
+  const canAutoCreateConversation =
+    !isConfigurationSeedLoading &&
+    (!configurationId || Boolean(queryTitle || resolvedConfigurationSeed?.title));
 
   const effectiveRole = userRole ?? "pending";
   const isAdminRole = effectiveRole === "admin";
@@ -172,9 +190,91 @@ const Conference = () => {
   }, [loading, navigate, user]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    if (!configurationId || queryTitle || searchParams.get("conversation_id")) {
+      setResolvedConfigurationSeed(null);
+      setIsConfigurationSeedLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (loading || !user) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setIsConfigurationSeedLoading(true);
+
+    void authedFetch(`/api/conference-configurations/${configurationId}`, {
+      method: "GET",
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as
+          | {
+              configuration?: {
+                problem_statement?: string | null;
+                template_title?: string | null;
+                template_script?: string | null;
+                template_id?: string | null;
+              };
+              error?: string;
+            }
+          | null;
+
+        if (!response.ok || !payload?.configuration) {
+          throw new Error(payload?.error ?? "Failed to load saved configuration.");
+        }
+
+        if (cancelled) return;
+
+        const resolvedTitle =
+          payload.configuration.problem_statement ||
+          payload.configuration.template_title ||
+          "Conference";
+
+        setResolvedConfigurationSeed({
+          title: resolvedTitle,
+          script: payload.configuration.template_script || "",
+          promptScriptId: payload.configuration.template_id || null,
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to load saved configuration.";
+        toast({
+          title: "Configuration unavailable",
+          description: message,
+          variant: "destructive",
+        });
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setIsConfigurationSeedLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [configurationId, loading, queryTitle, searchParams, toast, user]);
+
+  useEffect(() => {
     if (hasCreatedConversation.current) return;
 
-    if (!loading && user && !conversationId && title && !searchParams.get("conversation_id")) {
+    if (
+      !loading &&
+      user &&
+      !conversationId &&
+      title &&
+      !searchParams.get("conversation_id") &&
+      canAutoCreateConversation
+    ) {
       hasCreatedConversation.current = true;
 
       createConversation.mutate(
@@ -211,6 +311,7 @@ const Conference = () => {
     title,
     toast,
     user,
+    canAutoCreateConversation,
   ]);
 
   useEffect(() => {

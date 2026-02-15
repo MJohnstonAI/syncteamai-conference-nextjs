@@ -5,6 +5,7 @@ import { getEffectiveOpenRouterKey } from "@/lib/server/byok";
 import { canGenerate, getEntitlementTier } from "@/lib/server/entitlements";
 import {
   acquireUserConcurrencySlot,
+  buildDeterministicIdempotencyKey,
   claimIdempotencyKey,
   enforceRateLimit,
   getCircuitCooldownSec,
@@ -220,7 +221,16 @@ export async function POST(request: Request) {
     requestId =
       request.headers.get("x-idempotency-key") ??
       body.idempotencyKey ??
-      `${body.conversationId}:${body.modelId}:${body.selectedAvatar ?? "default"}:${body.messages.length}`;
+      buildDeterministicIdempotencyKey({
+        prefix: "ai:generate",
+        payload: {
+          conversationId: body.conversationId,
+          roundId: body.roundId ?? null,
+          selectedAvatar: body.selectedAvatar ?? null,
+          modelId: body.modelId,
+          messages: body.messages,
+        },
+      });
 
     const isNewRequest = await claimIdempotencyKey({
       userId: user.id,

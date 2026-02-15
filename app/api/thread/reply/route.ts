@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  buildDeterministicIdempotencyKey,
   claimIdempotencyKey,
   enforceRateLimit,
   resolveRequestIdentity,
@@ -112,7 +113,17 @@ export async function POST(request: Request) {
     const idempotencyKey =
       request.headers.get("x-idempotency-key") ??
       body.idempotencyKey ??
-      `${body.conversationId}:${body.parentMessageId ?? "root"}:${body.replyMode}:${body.content.length}`;
+      buildDeterministicIdempotencyKey({
+        prefix: "thread:reply",
+        payload: {
+          conversationId: body.conversationId,
+          roundId: body.roundId ?? null,
+          parentMessageId: body.parentMessageId ?? null,
+          replyMode: body.replyMode,
+          avatarId: body.avatarId ?? null,
+          content: body.content,
+        },
+      });
 
     const isNew = await claimIdempotencyKey({
       userId: user.id,

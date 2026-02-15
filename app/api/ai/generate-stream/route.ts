@@ -5,6 +5,7 @@ import { getEffectiveOpenRouterKey } from "@/lib/server/byok";
 import { canGenerate, getEntitlementTier } from "@/lib/server/entitlements";
 import {
   acquireUserConcurrencySlot,
+  buildDeterministicIdempotencyKey,
   claimIdempotencyKey,
   enforceRateLimit,
   getCircuitCooldownSec,
@@ -143,6 +144,15 @@ export async function POST(request: Request) {
   let resolvedModelId = "";
   let requestId: string | null = null;
   const startedAt = Date.now();
+  let slot: Awaited<ReturnType<typeof acquireUserConcurrencySlot>> | null = null;
+  let slotReleased = false;
+  let streamOwnsSlot = false;
+
+  const releaseSlot = async () => {
+    if (!slot?.acquired || slotReleased) return;
+    slotReleased = true;
+    await slot.release();
+  };
 
   try {
     const { user, supabase } = await requireRequestUser(request);
@@ -236,7 +246,16 @@ export async function POST(request: Request) {
     requestId =
       request.headers.get("x-idempotency-key") ??
       body.idempotencyKey ??
-      `${body.conversationId}:${body.modelId}:${body.selectedAvatar}:${body.messages.length}`;
+      buildDeterministicIdempotencyKey({
+        prefix: "ai:generate-stream",
+        payload: {
+          conversationId: body.conversationId,
+          roundId: body.roundId ?? null,
+          selectedAvatar: body.selectedAvatar,
+          modelId: body.modelId,
+          messages: body.messages,
+        },
+      });
 
     const isNewRequest = await claimIdempotencyKey({
       userId: user.id,
@@ -267,7 +286,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const slot = await acquireUserConcurrencySlot({
+    slot = await acquireUserConcurrencySlot({
       userId: user.id,
       maxConcurrent: 2,
       ttlSec: 300,
@@ -306,7 +325,6 @@ export async function POST(request: Request) {
 
     if (!upstream.ok || !upstream.body) {
       clearTimeout(timeout);
-      await slot.release();
       if (upstream.status === 503 || upstream.status === 504) {
         await openCircuitFor({ provider: "openrouter", ttlSec: 20 });
       }
@@ -374,7 +392,7 @@ export async function POST(request: Request) {
             // Ignore metering failures in stream teardown.
           }
 
-          await slot.release();
+          await releaseSlot();
 
           if (status === "error") {
             writeSse(controller, "error", {
@@ -471,7 +489,9 @@ export async function POST(request: Request) {
       },
     });
 
-    return new Response(stream, { status: 200, headers: sseHeaders });
+    const streamingResponse = new Response(stream, { status: 200, headers: sseHeaders });
+    streamOwnsSlot = true;
+    return streamingResponse;
   } catch (error) {
     if (error instanceof Error && error.message === "UNAUTHORIZED") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -506,5 +526,9 @@ export async function POST(request: Request) {
         ? error.message
         : "Streaming generation failed due to a server error.";
     return NextResponse.json({ error: message }, { status: 500 });
+  } finally {
+    if (!streamOwnsSlot) {
+      await releaseSlot();
+    }
   }
 }

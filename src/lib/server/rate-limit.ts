@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "node:crypto";
 
 import { getUpstashEnv } from "@/lib/server/env";
 
@@ -31,6 +32,37 @@ const trustProxyHeaders =
 const upstashTimeoutMs = 2500;
 
 const getNow = () => Date.now();
+
+const canonicalizeForHash = (value: unknown): string => {
+  if (value === null) return "null";
+
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? JSON.stringify(value) : JSON.stringify(String(value));
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalizeForHash(entry)).join(",")}]`;
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+    return `{${entries
+      .map(
+        ([entryKey, entryValue]) =>
+          `${JSON.stringify(entryKey)}:${canonicalizeForHash(entryValue)}`
+      )
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(String(value));
+};
+
+const hashIdempotencyPayload = (payload: unknown): string =>
+  createHash("sha256").update(canonicalizeForHash(payload)).digest("hex");
 
 const getClientIp = (request: Request): string => {
   if (trustProxyHeaders) {
@@ -174,6 +206,24 @@ export const claimIdempotencyKey = async ({
   }
   inMemoryIdempotency.set(scopedKey, now + ttlSec * 1000);
   return true;
+};
+
+export const buildDeterministicIdempotencyKey = ({
+  prefix,
+  payload,
+  maxLength = 180,
+}: {
+  prefix: string;
+  payload: unknown;
+  maxLength?: number;
+}): string => {
+  const normalizedPrefix =
+    prefix.trim().toLowerCase().replace(/[^a-z0-9:_-]+/g, "-") || "idempotency";
+  const digest = hashIdempotencyPayload(payload);
+  const hashLength = Math.min(64, Math.max(16, maxLength - 2));
+  const prefixBudget = Math.max(1, maxLength - hashLength - 1);
+  const compactPrefix = normalizedPrefix.slice(0, prefixBudget);
+  return `${compactPrefix}:${digest.slice(0, hashLength)}`;
 };
 
 export const acquireUserConcurrencySlot = async ({

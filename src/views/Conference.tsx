@@ -113,6 +113,49 @@ const MAX_TRANSCRIPT_MESSAGES = 180;
 const MAX_TRANSCRIPT_MESSAGE_CHARS = 8_000;
 const MIN_ACTIVE_AGENTS = 2;
 
+const hashConferenceKey = (value: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const buildConferenceTurnIdempotencyKey = ({
+  conversationId,
+  userMessageId,
+  avatarId,
+  modelId,
+  phase,
+  roundNumber,
+  batchAttempt,
+  turnAttempt,
+}: {
+  conversationId: string;
+  userMessageId: string;
+  avatarId: string;
+  modelId: string;
+  phase: ConferencePhase;
+  roundNumber: number;
+  batchAttempt: number;
+  turnAttempt: number;
+}): string => {
+  const fingerprint = hashConferenceKey(
+    [
+      conversationId,
+      userMessageId,
+      avatarId,
+      modelId,
+      phase,
+      String(roundNumber),
+      String(batchAttempt),
+      String(turnAttempt),
+    ].join("|")
+  );
+  return `conference:${fingerprint}:b${batchAttempt.toString(36)}:t${turnAttempt.toString(36)}`;
+};
+
 const buildFallbackRoleFromConfiguredAgent = (agent: ConfiguredAgent): ExpertRole => ({
   id: `role_${agent.avatarId}`,
   title: agent.roleTitle,
@@ -217,6 +260,8 @@ const Conference = () => {
   const queuedHumanRepliesRef = useRef<QueuedHumanReply[]>([]);
   const activePhaseRef = useRef<ConferencePhase>("diverge");
   const activeRoundNumberRef = useRef(1);
+  const runBatchAttemptRef = useRef(0);
+  const turnAttemptByAgentRef = useRef<Record<string, number>>({});
   const rootComposerRef = useRef<HTMLDivElement | null>(null);
 
   const configurationId =
@@ -445,6 +490,8 @@ const Conference = () => {
     queuedHumanRepliesRef.current = [];
     roundTranscriptRef.current = [];
     roundMessageIdRef.current = null;
+    runBatchAttemptRef.current = 0;
+    turnAttemptByAgentRef.current = {};
   }, [conversationId]);
 
   useEffect(() => {
@@ -1033,6 +1080,8 @@ const Conference = () => {
       const failed: string[] = [];
       let cancelled = false;
       const runRoles = resolveRunRoles(avatarIds);
+      runBatchAttemptRef.current += 1;
+      const batchAttempt = runBatchAttemptRef.current;
 
       try {
         for (let avatarIndex = 0; avatarIndex < avatarIds.length; avatarIndex += 1) {
@@ -1062,7 +1111,21 @@ const Conference = () => {
           let livePreview = "";
 
           try {
-            const idempotencyKey = `${conversationId}:${userMessageId}:${avatarId}:${modelId}:${Date.now()}`;
+            const turnAttemptId = `${userMessageId}:${avatarId}:${modelId}`;
+            const turnAttempt = (turnAttemptByAgentRef.current[turnAttemptId] ?? 0) + 1;
+            turnAttemptByAgentRef.current[turnAttemptId] = turnAttempt;
+            const idempotencyBaseKey = buildConferenceTurnIdempotencyKey({
+              conversationId,
+              userMessageId,
+              avatarId,
+              modelId,
+              phase,
+              roundNumber,
+              batchAttempt,
+              turnAttempt,
+            });
+            const generationIdempotencyKey = `${idempotencyBaseKey}:generate`;
+            const persistIdempotencyKey = `${idempotencyBaseKey}:persist`;
             const agentName = getAgentName(avatarId);
             const agentRole = runRoles[avatarId] ?? "default";
             const phasePromptBase = buildConferencePhaseSystemPrompt({
@@ -1088,7 +1151,7 @@ const Conference = () => {
                 { role: "system", content: phasePrompt },
                 ...transcript,
               ],
-              idempotencyKey,
+              idempotencyKey: generationIdempotencyKey,
               signal: abortController.signal,
               onDelta: (chunk) => {
                 livePreview += chunk;
@@ -1118,7 +1181,7 @@ const Conference = () => {
               content: normalized.content,
               replyMode: "agent",
               avatarId,
-              idempotencyKey: `${idempotencyKey}:persist`,
+              idempotencyKey: persistIdempotencyKey,
             });
 
             transcript.push({

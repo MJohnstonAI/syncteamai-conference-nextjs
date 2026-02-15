@@ -400,6 +400,15 @@ export type Database = {
         Args: { _user_id: string }
         Returns: boolean
       }
+      get_thread_facets: {
+        Args: { p_conversation_id: string }
+        Returns: {
+          facet_type: string
+          facet_id: string
+          created_at: string | null
+          message_count: number
+        }[]
+      }
       ensure_profile_and_role: {
         Args: { _user_id: string; _email?: string | null }
         Returns: null

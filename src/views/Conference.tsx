@@ -4,6 +4,23 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { RootPostCard } from "@/components/thread/RootPostCard";
 import { ThreadList } from "@/components/thread/ThreadList";
@@ -92,6 +109,8 @@ type NextStepState =
   | "no_active_models"
   | "idle";
 
+type CancelDialogIntent = "pause_run" | "end_conference" | null;
+
 type ConfigurationSeed = {
   title: string;
   script: string;
@@ -112,6 +131,7 @@ const MAX_REPLY_CONTENT_CHARS = 120_000;
 const MAX_TRANSCRIPT_MESSAGES = 180;
 const MAX_TRANSCRIPT_MESSAGE_CHARS = 8_000;
 const MIN_ACTIVE_AGENTS = 2;
+const PHASE_TIMELINE: ConferencePhase[] = ["diverge", "challenge", "synthesize"];
 
 const hashConferenceKey = (value: string): string => {
   let hash = 2166136261;
@@ -251,6 +271,9 @@ const Conference = () => {
   const [isExpertCustomizerOpen, setIsExpertCustomizerOpen] = useState(false);
   const [customizingAvatarId, setCustomizingAvatarId] = useState<string | null>(null);
   const [customizingRoleDraft, setCustomizingRoleDraft] = useState<ExpertRole | null>(null);
+  const [cancelDialogIntent, setCancelDialogIntent] = useState<CancelDialogIntent>(null);
+  const [isCheckpointSheetOpen, setIsCheckpointSheetOpen] = useState(false);
+  const [isRootDraftHydrated, setIsRootDraftHydrated] = useState(false);
 
   const hasCreatedConversation = useRef(false);
   const generationAbortRef = useRef<AbortController | null>(null);
@@ -283,6 +306,9 @@ const Conference = () => {
   const canAutoCreateConversation =
     !isConfigurationSeedLoading &&
     (!configurationId ? Boolean(queryTitle || resolvedConfigurationSeed?.title) : hasConfigurationSeed);
+  const rootDraftStorageKey = conversationId
+    ? `conference:root-draft:${conversationId}`
+    : null;
 
   const effectiveRole = userRole ?? "pending";
   const isAdminRole = effectiveRole === "admin";
@@ -484,6 +510,9 @@ const Conference = () => {
     setIsExpertCustomizerOpen(false);
     setCustomizingAvatarId(null);
     setCustomizingRoleDraft(null);
+    setCancelDialogIntent(null);
+    setIsCheckpointSheetOpen(false);
+    setIsRootDraftHydrated(false);
     activePhaseRef.current = "diverge";
     activeRoundNumberRef.current = 1;
     roundCitationIdsRef.current = [];
@@ -493,6 +522,44 @@ const Conference = () => {
     runBatchAttemptRef.current = 0;
     turnAttemptByAgentRef.current = {};
   }, [conversationId]);
+
+  useEffect(() => {
+    if (!rootDraftStorageKey) {
+      setIsRootDraftHydrated(false);
+      return;
+    }
+    setIsRootDraftHydrated(false);
+    try {
+      const storedDraft = window.sessionStorage.getItem(rootDraftStorageKey);
+      if (storedDraft !== null) {
+        setRootDraft(storedDraft);
+      }
+    } catch {
+      // Ignore storage read failures.
+    }
+    setIsRootDraftHydrated(true);
+  }, [rootDraftStorageKey]);
+
+  useEffect(() => {
+    if (!rootDraftStorageKey || !isRootDraftHydrated) return;
+    try {
+      if (rootDraft.length === 0) {
+        window.sessionStorage.removeItem(rootDraftStorageKey);
+      } else {
+        window.sessionStorage.setItem(rootDraftStorageKey, rootDraft);
+      }
+    } catch {
+      // Ignore storage write failures.
+    }
+  }, [isRootDraftHydrated, rootDraft, rootDraftStorageKey]);
+
+  useEffect(() => {
+    if (pendingPhaseRun) {
+      setIsCheckpointSheetOpen(true);
+    } else {
+      setIsCheckpointSheetOpen(false);
+    }
+  }, [pendingPhaseRun]);
 
   useEffect(() => {
     return () => {
@@ -1596,12 +1663,35 @@ const Conference = () => {
     navigate(target);
   }, [conversationId, navigate]);
 
+  const requestCancelGeneration = useCallback(
+    (intent: Exclude<CancelDialogIntent, null>) => {
+      if (!isAiThinking) {
+        if (intent === "end_conference") {
+          navigate("/templates");
+        }
+        return;
+      }
+      setCancelDialogIntent(intent);
+    },
+    [isAiThinking, navigate]
+  );
+
+  const confirmCancelGeneration = useCallback(() => {
+    const intent = cancelDialogIntent;
+    setCancelDialogIntent(null);
+    cancelAgentGeneration();
+    if (intent === "end_conference") {
+      navigate("/templates");
+    }
+  }, [cancelAgentGeneration, cancelDialogIntent, navigate]);
+
   const handleEndConference = useCallback(() => {
     if (isAiThinking) {
-      cancelAgentGeneration();
+      requestCancelGeneration("end_conference");
+      return;
     }
     navigate("/templates");
-  }, [cancelAgentGeneration, isAiThinking, navigate]);
+  }, [isAiThinking, navigate, requestCancelGeneration]);
 
   const conferenceReturnPath = useMemo(() => {
     const query = searchParams.toString();
@@ -1709,6 +1799,7 @@ const Conference = () => {
           actionLabel: "Please wait",
           actionVariant: "outline" as const,
           actionDisabled: true,
+          actionDisabledReason: "Conference context is still initializing.",
         };
       case "pending_run":
         return {
@@ -1723,6 +1814,9 @@ const Conference = () => {
           actionLabel: isAiThinking ? "Pause run" : "Sending...",
           actionVariant: "outline" as const,
           actionDisabled: !isAiThinking,
+          actionDisabledReason: isAiThinking
+            ? null
+            : "Waiting for your message to finish posting.",
         };
       case "phase_checkpoint":
         return {
@@ -1733,9 +1827,12 @@ const Conference = () => {
             pendingPhaseRun
               ? `Round ${pendingPhaseRun.roundNumber} is queued for ${getConferencePhaseMeta(pendingPhaseRun.phase).label}.`
               : "The next phase is waiting for your confirmation.",
-          actionLabel: "Start next phase",
+          actionLabel: "Review checkpoint",
           actionVariant: "default" as const,
           actionDisabled: !pendingPhaseRun,
+          actionDisabledReason: pendingPhaseRun
+            ? null
+            : "No queued phase checkpoint is available.",
         };
       case "partial_failure":
         return {
@@ -1746,6 +1843,7 @@ const Conference = () => {
           actionLabel: "Retry failed agents",
           actionVariant: "default" as const,
           actionDisabled: false,
+          actionDisabledReason: null,
         };
       case "no_byok":
         return {
@@ -1758,6 +1856,7 @@ const Conference = () => {
           actionLabel: hasPrivilegedAccess ? "Configure BYOK" : "Open subscription",
           actionVariant: "default" as const,
           actionDisabled: false,
+          actionDisabledReason: null,
         };
       case "no_active_models":
         return {
@@ -1769,6 +1868,7 @@ const Conference = () => {
           actionLabel: orderedAvatarIds.length > 0 ? "Open customize" : "Open AI settings",
           actionVariant: "default" as const,
           actionDisabled: false,
+          actionDisabledReason: null,
         };
       case "idle":
       default:
@@ -1783,6 +1883,7 @@ const Conference = () => {
           actionLabel: threadNodes.length === 0 ? "Send first prompt" : "Compose next prompt",
           actionVariant: "default" as const,
           actionDisabled: false,
+          actionDisabledReason: null,
         };
     }
   }, [
@@ -1800,11 +1901,11 @@ const Conference = () => {
     switch (nextStepState) {
       case "pending_run":
         if (isAiThinking) {
-          cancelAgentGeneration();
+          requestCancelGeneration("pause_run");
         }
         return;
       case "phase_checkpoint":
-        void continuePendingPhaseRun();
+        setIsCheckpointSheetOpen(true);
         return;
       case "partial_failure":
         void retryAllFailedAgents();
@@ -1835,8 +1936,6 @@ const Conference = () => {
         return;
     }
   }, [
-    cancelAgentGeneration,
-    continuePendingPhaseRun,
     focusRootComposer,
     hasPrivilegedAccess,
     isAiThinking,
@@ -1846,10 +1945,16 @@ const Conference = () => {
     openAiSettings,
     navigateToAuthForByok,
     nextStepState,
+    requestCancelGeneration,
     retryAllFailedAgents,
     threadNodes.length,
     triggerFirstPromptFromTemplate,
   ]);
+
+  const handleCheckpointContinue = useCallback(() => {
+    setIsCheckpointSheetOpen(false);
+    void continuePendingPhaseRun();
+  }, [continuePendingPhaseRun]);
 
   const currentRoundCount = firstThreadPage?.rounds.length ?? 0;
   const nextRoundNumber = currentRoundCount + 1;
@@ -1862,6 +1967,35 @@ const Conference = () => {
     ? activeRoundNumber
     : nextRoundNumber;
   const displayPhaseMeta = getConferencePhaseMeta(displayPhase);
+  const runStatusLabel =
+    nextStepState === "session_booting"
+      ? "Booting"
+      : nextStepState === "pending_run"
+      ? "Running"
+      : nextStepState === "phase_checkpoint"
+      ? "Checkpoint"
+      : nextStepState === "partial_failure"
+      ? "Recovery"
+      : nextStepState === "no_byok" || nextStepState === "no_active_models"
+      ? "Blocked"
+      : "Ready";
+
+  const phaseTimelineItems = PHASE_TIMELINE.map((phase) => {
+    const phaseMeta = getConferencePhaseMeta(phase);
+    const phaseOrder = PHASE_TIMELINE.indexOf(phase);
+    const activeOrder = PHASE_TIMELINE.indexOf(displayPhase);
+    const status =
+      phaseOrder < activeOrder
+        ? "complete"
+        : phaseOrder === activeOrder
+        ? "active"
+        : "upcoming";
+    return {
+      key: phase,
+      label: phaseMeta.label,
+      status,
+    };
+  });
 
   const conferenceTitle = firstThreadPage?.rootPost.title ?? title;
   const conferenceDateParts = useMemo(() => {
@@ -1884,46 +2018,75 @@ const Conference = () => {
   const editorialPanelClass =
     "rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_8px_28px_-18px_rgba(15,23,42,0.28)] dark:border-slate-700/80 dark:bg-[#141a26]";
 
-  const priorityCard =
-    nextStepState === "no_byok" ? null : (
-      <section className="mx-auto w-full max-w-5xl rounded-[1.35rem] bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-[2px] shadow-[0_20px_45px_-24px_rgba(79,70,229,0.8)]">
-        <div className="rounded-[1.2rem] bg-white px-5 py-4 dark:bg-[#141a26] sm:px-6">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-1.5">
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">
-                  {hasPrivilegedAccess ? "Conference Flow" : "Access Required"}
-                </p>
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em]">
-                  Phase {displayPhaseMeta.label}
-                </Badge>
-                <Badge variant={nextStepMeta.badgeVariant} className="text-[10px] uppercase tracking-[0.12em]">
-                  {nextStepMeta.badgeLabel}
-                </Badge>
-              </div>
-              <h2 className="font-[var(--font-playfair)] text-2xl font-bold leading-tight text-slate-900 dark:text-slate-100">
-                {nextStepMeta.title}
-              </h2>
-              <p className="text-sm text-slate-500 dark:text-slate-300">{nextStepMeta.description}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-300">
-                Round {displayRoundNumber}: {displayPhaseMeta.shortDescription}
+  const priorityCard = (
+    <section className="sticky top-0 z-20 mx-auto w-full max-w-5xl rounded-[1.35rem] bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 p-[2px] shadow-[0_20px_45px_-24px_rgba(79,70,229,0.8)]">
+      <div className="rounded-[1.2rem] bg-white px-5 py-4 dark:bg-[#141a26] sm:px-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-indigo-600 dark:text-indigo-300">
+                {hasPrivilegedAccess ? "Conference Flow" : "Access Required"}
               </p>
+              <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em]">
+                Round {displayRoundNumber}
+              </Badge>
+              <Badge variant="outline" className="text-[10px] uppercase tracking-[0.12em]">
+                Phase {displayPhaseMeta.label}
+              </Badge>
+              <Badge variant={nextStepMeta.badgeVariant} className="text-[10px] uppercase tracking-[0.12em]">
+                {runStatusLabel}
+              </Badge>
             </div>
+            <h2 className="font-[var(--font-playfair)] text-2xl font-bold leading-tight text-slate-900 dark:text-slate-100">
+              Now: {nextStepMeta.title}
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-300">{nextStepMeta.description}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-300">
+              Next: {nextStepMeta.actionLabel}
+            </p>
+          </div>
+          <div className="w-full max-w-xs space-y-1.5 lg:text-right">
             <Button
               type="button"
               size="sm"
               variant={nextStepMeta.actionVariant}
               onClick={handleNextStepPrimaryAction}
               disabled={nextStepMeta.actionDisabled}
-              className="h-11 min-w-44 rounded-xl px-5 text-sm font-semibold"
+              className="h-11 w-full rounded-xl px-5 text-sm font-semibold"
             >
               {nextStepMeta.actionLabel}
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
+            <p className="min-h-4 text-[11px] text-slate-500 dark:text-slate-300">
+              {nextStepMeta.actionDisabled
+                ? nextStepMeta.actionDisabledReason ?? "Action unavailable right now."
+                : `Round ${displayRoundNumber}: ${displayPhaseMeta.shortDescription}`}
+            </p>
           </div>
         </div>
-      </section>
-    );
+
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          {phaseTimelineItems.map((phaseItem) => (
+            <div
+              key={phaseItem.key}
+              className={`rounded-lg border px-3 py-2 text-xs ${
+                phaseItem.status === "active"
+                  ? "border-indigo-400 bg-indigo-50 text-indigo-700 dark:border-indigo-500/50 dark:bg-indigo-500/15 dark:text-indigo-200"
+                  : phaseItem.status === "complete"
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200"
+                  : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-[#1b2331] dark:text-slate-300"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-semibold">{phaseItem.label}</span>
+                <span className="capitalize">{phaseItem.status}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
 
   const leftSidebar = (
     <div className="space-y-4 pb-4">
@@ -2013,9 +2176,20 @@ const Conference = () => {
           />
         </div>
         {pendingPhaseRun ? (
-          <p className="mt-2 text-[11px] text-indigo-600 dark:text-indigo-300">
-            Checkpoint pending: Round {pendingPhaseRun.roundNumber} ({getConferencePhaseMeta(pendingPhaseRun.phase).label})
-          </p>
+          <div className="mt-2 space-y-2">
+            <p className="text-[11px] text-indigo-600 dark:text-indigo-300">
+              Checkpoint pending: Round {pendingPhaseRun.roundNumber} ({getConferencePhaseMeta(pendingPhaseRun.phase).label})
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 rounded-md px-2 text-[11px]"
+              onClick={() => setIsCheckpointSheetOpen(true)}
+            >
+              Review checkpoint
+            </Button>
+          </div>
         ) : null}
       </section>
 
@@ -2266,7 +2440,7 @@ const Conference = () => {
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={cancelAgentGeneration}
+                  onClick={() => requestCancelGeneration("pause_run")}
                   className="rounded-lg"
                   >
                     <Square className="mr-2 h-3.5 w-3.5" />
@@ -2598,6 +2772,99 @@ const Conference = () => {
         centerColumn={centerColumn}
         rightSidebar={rightSidebar}
       />
+      <Sheet open={isCheckpointSheetOpen} onOpenChange={setIsCheckpointSheetOpen}>
+        <SheetContent side="right" className="w-[92vw] sm:max-w-lg">
+          <SheetHeader>
+            <SheetTitle>Phase Checkpoint Review</SheetTitle>
+            <SheetDescription>
+              Confirm the next phase before agents continue.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="mt-4 space-y-4">
+            {pendingPhaseRun ? (
+              <>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-[#1b2331] dark:text-slate-300">
+                  <p>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">Round:</span>{" "}
+                    {pendingPhaseRun.roundNumber}
+                  </p>
+                  <p>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">Phase:</span>{" "}
+                    {getConferencePhaseMeta(pendingPhaseRun.phase).label}
+                  </p>
+                  <p>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">Agents queued:</span>{" "}
+                    {pendingPhaseRun.avatarIds.length}
+                  </p>
+                  {queuedHumanReplies.length > 0 ? (
+                    <p>
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">Queued interjections:</span>{" "}
+                      {queuedHumanReplies.length}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleCheckpointContinue}
+                    disabled={isAiThinking}
+                    className="rounded-lg"
+                  >
+                    Start Next Phase
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsCheckpointSheetOpen(false)}
+                    className="rounded-lg"
+                  >
+                    Stay Paused
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-slate-500 dark:text-slate-300">
+                No phase checkpoint is waiting right now.
+              </p>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+      <AlertDialog
+        open={cancelDialogIntent !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCancelDialogIntent(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {cancelDialogIntent === "end_conference"
+                ? "End Conference and Cancel Active Run?"
+                : "Cancel Active Generation?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {cancelDialogIntent === "end_conference"
+                ? "This stops the current generation and exits to Templates. Partial round output remains in the thread."
+                : "This stops the current generation immediately. You can retry failed agents from Recovery afterward."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep Running</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmCancelGeneration}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              {cancelDialogIntent === "end_conference" ? "End and Cancel" : "Cancel Run"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <ExpertCustomizerSheet
         open={isExpertCustomizerOpen}
         onOpenChange={(open) => {

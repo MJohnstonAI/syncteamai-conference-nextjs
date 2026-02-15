@@ -40,6 +40,58 @@ type MessageRow = {
   sort_key: string;
 };
 
+type TopRootRow = {
+  id: string;
+  score: number;
+  created_at: string;
+  round_id: string | null;
+};
+
+type FacetRow = {
+  facet_type: "round" | "agent";
+  facet_id: string;
+  created_at: string | null;
+  message_count: number | string;
+};
+
+type TopCursor = {
+  score: number;
+  createdAt: string;
+  id: string;
+};
+
+const MESSAGE_SELECT =
+  "id, conversation_id, parent_message_id, thread_root_id, round_id, depth, role, content, avatar_id, created_at, score, is_highlight, sort_key";
+
+const coerceCount = (value: number | string | null | undefined): number => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.trunc(parsed);
+};
+
+const decodeTopCursor = (raw: string | undefined): TopCursor | null => {
+  if (!raw) return null;
+
+  const [scoreRaw, createdAtRaw, idRaw] = raw.split("|");
+  if (!scoreRaw || !createdAtRaw || !idRaw) return null;
+
+  const score = Number(scoreRaw);
+  if (!Number.isFinite(score)) return null;
+
+  if (!z.string().datetime({ offset: true }).safeParse(createdAtRaw).success) {
+    return null;
+  }
+
+  if (!z.string().uuid().safeParse(idRaw).success) {
+    return null;
+  }
+
+  return { score, createdAt: createdAtRaw, id: idRaw };
+};
+
+const encodeTopCursor = (row: TopRootRow): string =>
+  `${row.score}|${row.created_at}|${row.id}`;
+
 export async function GET(request: Request) {
   try {
     const { supabase } = await requireRequestUser(request);
@@ -68,123 +120,165 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
     }
 
-    let threadQuery = supabase
-      .from("messages")
-      .select(
-        "id, conversation_id, parent_message_id, thread_root_id, round_id, depth, role, content, avatar_id, created_at, score, is_highlight, sort_key"
-      )
-      .eq("conversation_id", parsed.conversationId);
+    const isTopSort = parsed.sort === "top";
+    let orderedRows: MessageRow[] = [];
+    let hasMore = false;
+    let nextCursor: string | null = null;
 
-    if (parsed.round) {
-      threadQuery = threadQuery.eq("round_id", parsed.round);
+    if (isTopSort) {
+      const topCursor = decodeTopCursor(parsed.cursor);
+      if (parsed.cursor && !topCursor) {
+        return NextResponse.json({ error: "Invalid top cursor." }, { status: 400 });
+      }
+
+      let topRootsQuery = supabase
+        .from("messages")
+        .select("id, score, created_at, round_id")
+        .eq("conversation_id", parsed.conversationId)
+        .eq("role", "user")
+        .is("parent_message_id", null);
+
+      if (parsed.round) {
+        topRootsQuery = topRootsQuery.eq("round_id", parsed.round);
+      }
+
+      if (topCursor) {
+        topRootsQuery = topRootsQuery.or(
+          [
+            `score.lt.${topCursor.score}`,
+            `and(score.eq.${topCursor.score},created_at.lt.${topCursor.createdAt})`,
+            `and(score.eq.${topCursor.score},created_at.eq.${topCursor.createdAt},id.lt.${topCursor.id})`,
+          ].join(",")
+        );
+      }
+
+      const { data: topRootRows, error: topRootError } = await topRootsQuery
+        .order("score", { ascending: false })
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(pageLimit + 1);
+
+      if (topRootError) {
+        throw new Error(topRootError.message);
+      }
+
+      const rankedRoots = (topRootRows ?? []) as TopRootRow[];
+      hasMore = rankedRoots.length > pageLimit;
+      const pageRoots = hasMore ? rankedRoots.slice(0, pageLimit) : rankedRoots;
+      nextCursor =
+        hasMore && pageRoots.length > 0
+          ? encodeTopCursor(pageRoots[pageRoots.length - 1])
+          : null;
+
+      const pageRootIds = pageRoots.map((row) => row.id);
+      if (pageRootIds.length > 0) {
+        let topRowsQuery = supabase
+          .from("messages")
+          .select(MESSAGE_SELECT)
+          .eq("conversation_id", parsed.conversationId)
+          .in("thread_root_id", pageRootIds);
+
+        if (parsed.round) {
+          topRowsQuery = topRowsQuery.eq("round_id", parsed.round);
+        }
+
+        if (parsed.agent && parsed.agent !== "all") {
+          topRowsQuery = topRowsQuery.or(`avatar_id.eq.${parsed.agent},role.eq.user`);
+        }
+
+        const { data: topRows, error: topRowsError } = await topRowsQuery
+          .order("sort_key", { ascending: true })
+          .order("created_at", { ascending: true });
+
+        if (topRowsError) {
+          throw new Error(topRowsError.message);
+        }
+
+        const buckets = new Map<string, MessageRow[]>();
+        for (const row of (topRows ?? []) as MessageRow[]) {
+          const key = row.thread_root_id ?? row.id;
+          const existing = buckets.get(key) ?? [];
+          existing.push(row);
+          buckets.set(key, existing);
+        }
+
+        orderedRows = pageRoots.flatMap((root) => buckets.get(root.id) ?? []);
+      }
+    } else {
+      let threadQuery = supabase
+        .from("messages")
+        .select(MESSAGE_SELECT)
+        .eq("conversation_id", parsed.conversationId);
+
+      if (parsed.round) {
+        threadQuery = threadQuery.eq("round_id", parsed.round);
+      }
+
+      if (parsed.agent && parsed.agent !== "all") {
+        threadQuery = threadQuery.or(`avatar_id.eq.${parsed.agent},role.eq.user`);
+      }
+
+      if (parsed.cursor) {
+        threadQuery = threadQuery.gt("sort_key", parsed.cursor);
+      }
+
+      const { data: rows, error: rowsError } = await threadQuery
+        .order("sort_key", { ascending: true })
+        .order("created_at", { ascending: true })
+        .limit(pageLimit + 1);
+      if (rowsError) {
+        throw new Error(rowsError.message);
+      }
+
+      const baseRows = (rows ?? []) as MessageRow[];
+      hasMore = baseRows.length > pageLimit;
+      const pageRows = hasMore ? baseRows.slice(0, pageLimit) : baseRows;
+      nextCursor =
+        hasMore && pageRows.length > 0
+          ? pageRows[pageRows.length - 1].sort_key
+          : null;
+      orderedRows = pageRows;
     }
 
-    if (parsed.agent && parsed.agent !== "all") {
-      threadQuery = threadQuery.or(`avatar_id.eq.${parsed.agent},role.eq.user`);
-    }
-
-    if (parsed.cursor && parsed.sort !== "top") {
-      threadQuery = threadQuery.gt("sort_key", parsed.cursor);
-    }
-
-    threadQuery = threadQuery
-      .order("sort_key", { ascending: true })
-      .order("created_at", { ascending: true });
-
-    if (parsed.sort !== "top") {
-      threadQuery = threadQuery.limit(pageLimit + 1);
-    }
-
-    const { data: rows, error: rowsError } = await threadQuery;
-    if (rowsError) {
-      throw new Error(rowsError.message);
-    }
-
-    const { data: facetRows, error: facetsError } = await supabase
-      .from("messages")
-      .select("id, role, avatar_id, round_id, created_at")
-      .eq("conversation_id", parsed.conversationId)
-      .order("created_at", { ascending: true });
+    const { data: rawFacetRows, error: facetsError } = await supabase.rpc(
+      "get_thread_facets",
+      { p_conversation_id: parsed.conversationId }
+    );
 
     if (facetsError) {
       throw new Error(facetsError.message);
     }
 
-    const roundCountMap = new Map<string, number>();
-    const roundCreatedMap = new Map<string, string>();
-    const agentCountMap = new Map<string, number>();
-
-    for (const row of facetRows ?? []) {
-      if (row.round_id) {
-        roundCountMap.set(row.round_id, (roundCountMap.get(row.round_id) ?? 0) + 1);
-      }
-      if (row.role === "user") {
-        roundCreatedMap.set(row.id, row.created_at);
-      }
-      if (row.avatar_id) {
-        agentCountMap.set(row.avatar_id, (agentCountMap.get(row.avatar_id) ?? 0) + 1);
-      }
-    }
-
-    const orderedRounds = Array.from(roundCreatedMap.entries())
-      .sort((a, b) => a[1].localeCompare(b[1]))
-      .map(([id, createdAt], index) => ({
-        id,
+    const facetRows = (rawFacetRows ?? []) as FacetRow[];
+    const orderedRounds = facetRows
+      .filter((row) => row.facet_type === "round" && Boolean(row.facet_id))
+      .map((row) => ({
+        id: row.facet_id,
+        createdAt: row.created_at ?? conversation.created_at,
+        count: coerceCount(row.message_count),
+      }))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((row, index) => ({
+        id: row.id,
         label: `Round ${index + 1}`,
-        createdAt,
-        count: roundCountMap.get(id) ?? 0,
+        createdAt: row.createdAt,
+        count: row.count,
       }));
 
-    const agents = Array.from(agentCountMap.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([id, count]) => ({
-        id,
-        name: getAgentMeta(id)?.name ?? id,
-        count,
+    const agents = facetRows
+      .filter((row) => row.facet_type === "agent" && Boolean(row.facet_id))
+      .map((row) => ({
+        id: row.facet_id,
+        count: coerceCount(row.message_count),
+      }))
+      .sort((a, b) => b.count - a.count)
+      .map((row) => ({
+        id: row.id,
+        name: getAgentMeta(row.id)?.name ?? row.id,
+        count: row.count,
       }));
 
-    const orderedRows = (() => {
-      const baseRows = (rows ?? []) as MessageRow[];
-      if (parsed.sort !== "top") return baseRows;
-
-      const buckets = new Map<string, MessageRow[]>();
-      for (const row of baseRows) {
-        const key = row.thread_root_id ?? row.id;
-        const existing = buckets.get(key) ?? [];
-        existing.push(row);
-        buckets.set(key, existing);
-      }
-
-      const rankedRoots = Array.from(buckets.entries())
-        .map(([key, bucket]) => {
-          const rootRow = bucket.find((item) => item.id === key) ?? bucket[0];
-          const fallbackScore = Math.max(...bucket.map((item) => item.score ?? 0));
-          return {
-            key,
-            score: rootRow?.score ?? fallbackScore,
-            createdAt: rootRow?.created_at ?? bucket[0]?.created_at ?? "",
-          };
-        })
-        .sort((a, b) => {
-          if (b.score !== a.score) return b.score - a.score;
-          return b.createdAt.localeCompare(a.createdAt);
-        });
-
-      return rankedRoots.flatMap((root) => buckets.get(root.key) ?? []);
-    })();
-
-    const paginationEnabled = parsed.sort !== "top";
-    const windowedRows = paginationEnabled
-      ? orderedRows.slice(0, pageLimit + 1)
-      : orderedRows;
-    const hasMore = paginationEnabled && windowedRows.length > pageLimit;
-    const pageRows = hasMore ? windowedRows.slice(0, pageLimit) : windowedRows;
-    const nextCursor =
-      hasMore && pageRows.length > 0
-        ? pageRows[pageRows.length - 1].sort_key
-        : null;
-
-    const nodes = pageRows.map((row) => ({
+    const nodes = orderedRows.map((row) => ({
       id: row.id,
       conversationId: row.conversation_id,
       parentMessageId: row.parent_message_id,
